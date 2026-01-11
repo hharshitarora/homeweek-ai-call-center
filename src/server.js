@@ -277,8 +277,11 @@ app.post("/run-dialer", async (req, res) => {
     const { rows } = await readAllRows();
 
     const queued = rows
-      .filter((r) => String(r.call_status || "").toLowerCase() === "queued")
-      .filter((r) => Number(r.call_attempts || 0) < 3);
+  .filter(r => String(r.call_status || "").toLowerCase() === "queued")
+  .filter(r => Number(r.call_attempts || 0) < 3)
+  .filter(r => String(r.phone_e164 || "").trim().startsWith("+"))
+  .filter(r => String(r.property_address || "").trim().length > 0);
+
 
     const batch = queued.slice(0, 5);
 
@@ -307,7 +310,7 @@ app.post("/run-dialer", async (req, res) => {
       try {
         const blandResp = await startBlandCall({
           phone: row.phone_e164,
-          voiceId: row.voice_id || process.env.DEFAULT_VOICE_ID || "3c5461af-bfe0-406d-925a-8b8ffeb8b29a",
+          voiceId: row.voice_id || process.env.DEFAULT_VOICE_ID,
           task,
           webhook: process.env.PUBLIC_WEBHOOK_URL,
           metadata,
