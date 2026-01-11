@@ -234,6 +234,7 @@ function mapOutcome({ status, transcript }) {
 }
 
 app.post('/webhooks/bland', async (req, res) => {
+  console.log("BLAND BODY:", JSON.stringify(req.body, null, 2));
   try {
     const parsed = BlandWebhookSchema.parse(req.body);
 
@@ -282,7 +283,7 @@ app.post('/webhooks/bland', async (req, res) => {
       });
     }
 
-    res.json({ ok: true });
+    res.status(200).send("ok");
   } catch (e) {
     log.error({ err: e }, 'bland webhook failed');
     res.status(400).json({ ok: false, error: String(e.message || e) });
