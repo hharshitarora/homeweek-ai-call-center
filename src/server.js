@@ -267,7 +267,7 @@ CONVERSATION FLOW (FOLLOW THIS ORDER)
 --------------------------------
 
 Opening:
-“Hi, this is Aarav from Homeseek Realtors — is this a bad time to talk?”
+“Hi, this is Vibha from Homeseek Realtors — is this a good time to talk?”
 
 If they say yes → acknowledge and pause.
 If they say no → continue.
