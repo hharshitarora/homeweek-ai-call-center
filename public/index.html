@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="api-base-url" content="https://homeweek-ai-call-center-production.up.railway.app">
   <title>Homeseek</title>
   <style>
     :root {
@@ -583,6 +584,11 @@
   </div>
 
   <script>
+    // API Configuration - can be overridden via window.API_BASE_URL or meta tag
+    const API_BASE_URL = window.API_BASE_URL || 
+      (document.querySelector('meta[name="api-base-url"]')?.content) || 
+      '';
+    
     // State
     let records = [];
     let headers = [];
@@ -666,7 +672,7 @@
     // API
     async function loadData() {
       try {
-        const res = await fetch('/rows');
+        const res = await fetch(`${API_BASE_URL}/rows`);
         const data = await res.json();
         if (!data.ok) throw new Error(data.error);
         
@@ -694,7 +700,7 @@
         const method = isNew ? 'POST' : 'PUT';
         const payload = isNew ? { data } : { sheet_row: rowNumber, data };
 
-        const res = await fetch(endpoint, {
+        const res = await fetch(`${API_BASE_URL}${endpoint}`, {
           method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -715,7 +721,7 @@
 
     async function triggerCall(rowNumber) {
       try {
-        const res = await fetch('/trigger-call', {
+        const res = await fetch(`${API_BASE_URL}/trigger-call`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sheet_row: rowNumber })
@@ -1031,7 +1037,7 @@
       if (!confirmed) return;
 
       try {
-        const res = await fetch('/delete-row', {
+        const res = await fetch(`${API_BASE_URL}/delete-row`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sheet_row: rowNumber })
