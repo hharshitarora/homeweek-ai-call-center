@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Homeseek</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-secondary: #f5f5f7;
+      --bg-tertiary: #fafafa;
+      --text-primary: #1d1d1f;
+      --text-secondary: #86868b;
+      --text-tertiary: #aeaeb2;
+      --separator: rgba(60, 60, 67, 0.12);
+      --blue: #007aff;
+      --green: #34c759;
+      --orange: #ff9500;
+      --red: #ff3b30;
+      --purple: #af52de;
+      --radius: 12px;
+      --radius-lg: 18px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+      --shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+      --transition: 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      line-height: 1.47059;
+      letter-spacing: -0.022em;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* App Shell */
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Navigation Bar */
+    .navbar {
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 0.5px solid var(--separator);
+      padding: 12px 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .navbar-content {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .navbar h1 {
+      font-size: 21px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .navbar-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .record-count {
+      font-size: 15px;
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: 980px;
+      font-size: 15px;
+      font-weight: 400;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: var(--blue);
+      color: white;
+    }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-primary:active { transform: scale(0.98); }
+
+    .btn-secondary {
+      background: rgba(0, 122, 255, 0.1);
+      color: var(--blue);
+    }
+    .btn-secondary:hover { background: rgba(0, 122, 255, 0.15); }
+
+    .btn-tertiary {
+      background: transparent;
+      color: var(--blue);
+      padding: 8px 12px;
+    }
+    .btn-tertiary:hover { background: rgba(0, 0, 0, 0.04); }
+
+    .btn-destructive {
+      background: transparent;
+      color: var(--red);
+    }
+    .btn-destructive:hover {
+      background: rgba(255, 59, 48, 0.1);
+    }
+
+    .btn-call {
+      background: var(--green);
+      color: white;
+      width: 100%;
+    }
+    .btn-call:hover { filter: brightness(1.05); }
+    .btn-call:disabled {
+      background: var(--bg-secondary);
+      color: var(--text-tertiary);
+      cursor: default;
+    }
+
+    .btn-view {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      width: 100%;
+    }
+    .btn-view:hover { background: #e5e5ea; }
+
+    /* Main Content */
+    .main {
+      flex: 1;
+      padding: 24px;
+    }
+
+    .content {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* View Container for Transitions */
+    .view-container {
+      position: relative;
+    }
+
+    .view {
+      transition: opacity var(--transition), transform var(--transition);
+    }
+
+    .view.hidden {
+      display: none;
+    }
+
+    /* Grid Layout */
+    .grid-view {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 24px;
+    }
+
+    /* Vertical Card Tile */
+    .card {
+      background: var(--bg);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      border: 1px solid transparent;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-hover);
+    }
+
+    .card:active {
+      transform: scale(0.99);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .card-title-group {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .card-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-subtitle {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .info-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .info-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .info-value {
+      font-size: 14px;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .info-value.notes {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .card-footer {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: auto;
+      padding-top: 16px;
+      border-top: 0.5px solid var(--separator);
+    }
+
+    /* Status Pill */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 980px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: capitalize;
+      flex-shrink: 0;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .status-queued { background: #fff3cd; color: #856404; }
+    .status-queued .status-dot { background: #ffc107; }
+    
+    .status-calling { background: #cce5ff; color: #004085; }
+    .status-calling .status-dot { background: #007bff; }
+    
+    .status-completed { background: #d4edda; color: #155724; }
+    .status-completed .status-dot { background: var(--green); }
+    
+    .status-failed { background: #f8d7da; color: #721c24; }
+    .status-failed .status-dot { background: var(--red); }
+    
+    .status-no_answer { background: #ffe5d0; color: #8a4500; }
+    .status-no_answer .status-dot { background: var(--orange); }
+    
+    .status-voicemail { background: #e8daef; color: #6c3483; }
+    .status-voicemail .status-dot { background: var(--purple); }
+
+    .status-opt_out { background: #e5e5ea; color: #636366; }
+    .status-opt_out .status-dot { background: #8e8e93; }
+
+    /* Detail View (Center Modal Style) */
+    .detail-container {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .detail-view {
+      background: var(--bg);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .detail-header {
+      padding: 24px;
+      border-bottom: 0.5px solid var(--separator);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .detail-title {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .detail-body {
+      padding: 0;
+    }
+
+    /* Field Groups (iOS Settings Style) */
+    .field-group {
+      padding: 20px 24px 8px;
+    }
+
+    .field-group-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      margin-bottom: 8px;
+      padding-left: 4px;
+    }
+
+    .field-list {
+      background: var(--bg-tertiary);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .field-row {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      min-height: 44px;
+      border-bottom: 0.5px solid var(--separator);
+    }
+
+    .field-row:last-child {
+      border-bottom: none;
+    }
+
+    .field-label {
+      font-size: 16px;
+      color: var(--text-primary);
+      width: 140px;
+      flex-shrink: 0;
+    }
+
+    .field-value {
+      flex: 1;
+      font-size: 16px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+
+    .field-value.editable {
+      color: var(--text-primary);
+    }
+
+    /* Editable Fields */
+    .field-input {
+      width: 100%;
+      border: none;
+      background: transparent;
+      font-size: 16px;
+      font-family: inherit;
+      color: var(--text-primary);
+      text-align: right;
+      outline: none;
+      padding: 0;
+    }
+
+    .field-input::placeholder {
+      color: var(--text-tertiary);
+    }
+
+    select.field-input {
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L6 6L11 1' stroke='%2386868b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right center;
+      padding-right: 20px;
+    }
+
+    .field-textarea {
+      width: 100%;
+      border: none;
+      background: transparent;
+      font-size: 16px;
+      font-family: inherit;
+      color: var(--text-primary);
+      outline: none;
+      padding: 0;
+      resize: none;
+      min-height: 80px;
+      text-align: left;
+      line-height: 1.5;
+    }
+
+    .field-row.textarea-row {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 16px;
+    }
+
+    .field-row.textarea-row .field-label {
+      width: auto;
+      font-weight: 500;
+    }
+
+    .field-row.textarea-row .field-value,
+    .field-row.textarea-row .field-textarea {
+      width: 100%;
+      text-align: left;
+    }
+
+    /* Detail Footer */
+    .detail-footer {
+      padding: 24px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      background: var(--bg-secondary);
+      border-top: 0.5px solid var(--separator);
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-secondary);
+      grid-column: 1 / -1;
+    }
+
+    .empty-state h2 {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: rgba(29, 29, 31, 0.9);
+      backdrop-filter: blur(10px);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 980px;
+      font-size: 15px;
+      font-weight: 500;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      opacity: 0;
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000;
+    }
+
+    .toast.visible {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    .toast.error {
+      background: rgba(255, 59, 48, 0.9);
+    }
+
+    /* Back Button */
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--blue);
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 12px 0;
+      margin-bottom: 8px;
+      background: none;
+      border: none;
+    }
+
+    .back-btn:hover { opacity: 0.8; }
+
+    /* Loading */
+    .loading {
+      text-align: center;
+      padding: 60px;
+      color: var(--text-secondary);
+      font-size: 17px;
+      grid-column: 1 / -1;
+    }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .navbar { padding: 12px 16px; }
+      .main { padding: 16px; }
+      .grid-view { grid-template-columns: 1fr; gap: 16px; }
+      .detail-header { padding: 16px; }
+      .field-group { padding: 16px 16px 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <nav class="navbar">
+      <div class="navbar-content">
+        <h1>Homeseek</h1>
+        <div class="navbar-actions">
+          <span id="recordCount" class="record-count"></span>
+          <button class="btn btn-secondary" onclick="loadData()">Refresh</button>
+          <button class="btn btn-primary" onclick="openAddView()">Add Lead</button>
+        </div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <div class="content">
+        <div class="view-container">
+          <!-- Grid View -->
+          <div id="listView" class="view grid-view">
+            <div class="loading">Loading leads...</div>
+          </div>
+
+          <!-- Detail View -->
+          <div id="detailView" class="view hidden detail-container"></div>
+        </div>
+      </div>
+    </main>
+
+    <div id="toast" class="toast"></div>
+  </div>
+
+  <script>
+    // State
+    let records = [];
+    let headers = [];
+    let currentRecord = null;
+    let isEditing = false;
+    let isAdding = false;
+
+    // Config
+    const REQUIRED = ['phone_e164', 'property_address'];
+    const HIDDEN_ADD = ['lead_id', 'property_id', 'call_status', 'call_attempts', 'bland_call_id', 
+                        'last_call_at', 'recording_url', 'transcript', 'notes', 'outcome', 'next_action', 'created_at'];
+    const READONLY = ['lead_id', 'property_id', 'bland_call_id', 'created_at'];
+    const TEXTAREA_FIELDS = ['notes', 'transcript', 'property_highlights'];
+    
+    const LABELS = {
+      'phone_e164': 'Phone',
+      'property_address': 'Address',
+      'property_beds_baths': 'Beds/Baths',
+      'property_price_inr': 'Price',
+      'property_highlights': 'Highlights',
+      'property_url': 'Listing URL',
+      'showing_windows': 'Showings',
+      'voice_id': 'Voice',
+      'call_status': 'Status',
+      'call_attempts': 'Attempts',
+      'last_call_at': 'Last Call',
+      'outcome': 'Outcome',
+      'next_action': 'Next Action',
+      'notes': 'Notes',
+      'team_feedback': 'Team Feedback',
+      'feedback_notes': 'Feedback Notes',
+      'created_at': 'Created',
+      'lead_id': 'Lead ID',
+      'property_id': 'Property ID',
+      'bland_call_id': 'Call ID',
+      'recording_url': 'Recording',
+      'transcript': 'Transcript'
+    };
+
+    // Map values to display names
+    const OUTCOME_DISPLAY = {
+      'no_answer': 'No Answer / Not Picked',
+      'voicemail': 'Voicemail',
+      'opt_out': 'Opted Out',
+      'interested': 'Interested',
+      'human_followup': 'Needs Follow-up'
+    };
+
+    const NEXT_ACTION_DISPLAY = {
+      'call_back_later': 'Schedule Follow-up Call',
+      'human_followup': 'Human Agent Follow-up',
+      'none': 'No Action Needed'
+    };
+
+    const FIELD_GROUPS = {
+      'Contact': ['phone_e164'],
+      'Property': ['property_address', 'property_beds_baths', 'property_price_inr', 'property_highlights', 'property_url', 'showing_windows'],
+      'Call': ['call_status', 'call_attempts', 'last_call_at', 'outcome', 'next_action', 'voice_id'],
+      'Feedback': ['team_feedback', 'feedback_notes'],
+      'Notes': ['notes'],
+      'System': ['lead_id', 'property_id', 'bland_call_id', 'created_at', 'recording_url', 'transcript']
+    };
+
+    // Helpers
+    const label = (h) => LABELS[h] || h.replace(/_/g, ' ');
+    const escape = (t) => { 
+      if (!t) return ''; 
+      const d = document.createElement('div'); 
+      d.textContent = t; 
+      return d.innerHTML; 
+    };
+
+    function toast(msg, isError = false) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast' + (isError ? ' error' : '');
+      el.classList.add('visible');
+      setTimeout(() => el.classList.remove('visible'), 3000);
+    }
+
+    // API
+    async function loadData() {
+      try {
+        const res = await fetch('/rows');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error);
+        
+        headers = data.headers || [];
+        records = data.rows || [];
+        
+        document.getElementById('recordCount').textContent = `${records.length} leads`;
+        renderList();
+      } catch (e) {
+        toast('Failed to load data', true);
+        document.getElementById('listView').innerHTML = `
+          <div class="empty-state">
+            <h2>Unable to Load</h2>
+            <p>Check your connection and try again.</p>
+            <button class="btn btn-primary" onclick="loadData()">Retry</button>
+          </div>
+        `;
+      }
+    }
+
+    async function saveRecord(data, rowNumber = null) {
+      try {
+        const isNew = !rowNumber;
+        const endpoint = isNew ? '/add-row' : '/update-row';
+        const method = isNew ? 'POST' : 'PUT';
+        const payload = isNew ? { data } : { sheet_row: rowNumber, data };
+
+        const res = await fetch(endpoint, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        const result = await res.json();
+        if (!result.ok) throw new Error(result.error);
+        
+        toast(isNew ? 'Lead added' : 'Changes saved');
+        await loadData();
+        showList();
+        return true;
+      } catch (e) {
+        toast(e.message || 'Failed to save', true);
+        return false;
+      }
+    }
+
+    async function triggerCall(rowNumber) {
+      try {
+        const res = await fetch('/trigger-call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheet_row: rowNumber })
+        });
+        
+        const data = await res.json();
+        
+        if (res.status === 409) {
+          toast('Call already in progress. Please wait for it to complete.', true);
+          await loadData();
+          return;
+        }
+        
+        if (!data.ok) throw new Error(data.error);
+        
+        toast('Call started');
+        await loadData();
+        
+        // Update current detail view if open
+        if (currentRecord && currentRecord.__rowNumber === rowNumber) {
+          const updated = records.find(r => r.__rowNumber === rowNumber);
+          if (updated) renderDetail(updated, false, false);
+        }
+      } catch (e) {
+        toast(e.message || 'Failed to start call', true);
+      }
+    }
+
+    // Rendering
+    function renderList() {
+      const container = document.getElementById('listView');
+      
+      if (records.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <h2>No Leads Yet</h2>
+            <p>Add your first lead to get started.</p>
+            <button class="btn btn-primary" onclick="openAddView()">Add Lead</button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = records.map((r, i) => {
+        const status = r.call_status || 'queued';
+        const statusDisplay = status.replace(/_/g, ' ');
+        // Enable call button when status is "queued" or "completed" (for testing/recalling)
+        // Disable only when actively "calling" to prevent duplicates
+        const canCall = status !== 'calling' && r.phone_e164?.startsWith('+');
+        const rowNum = r.__rowNumber;
+        const outcomeDisplay = OUTCOME_DISPLAY[r.outcome] || r.outcome || '—';
+        const nextActionDisplay = NEXT_ACTION_DISPLAY[r.next_action] || r.next_action || '—';
+        
+        return `
+          <div class="card" onclick="openDetail(${i})">
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-title">${escape(r.phone_e164 || 'Untitled')}</div>
+                <div class="card-subtitle">ID: ${r.lead_id || '-'}</div>
+              </div>
+              <span class="status-pill status-${status}">
+                <span class="status-dot"></span>
+                ${statusDisplay}
+              </span>
+            </div>
+            
+            <div class="card-body">
+              <div class="info-row">
+                <span class="info-label">Address</span>
+                <span class="info-value">${escape(r.property_address || '—')}</span>
+              </div>
+              ${r.property_price_inr ? `
+                <div class="info-row">
+                  <span class="info-label">Price</span>
+                  <span class="info-value">${escape(r.property_price_inr)}</span>
+                </div>
+              ` : ''}
+              ${r.outcome ? `
+                <div class="info-row">
+                  <span class="info-label">Outcome</span>
+                  <span class="info-value">${escape(outcomeDisplay)}</span>
+                </div>
+              ` : ''}
+              ${r.next_action ? `
+                <div class="info-row">
+                  <span class="info-label">Next Action</span>
+                  <span class="info-value">${escape(nextActionDisplay)}</span>
+                </div>
+              ` : ''}
+              ${r.notes ? `
+                <div class="info-row">
+                  <span class="info-label">Notes</span>
+                  <div class="info-value notes">${escape(r.notes)}</div>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="card-footer">
+              <button class="btn btn-view" onclick="event.stopPropagation(); openDetail(${i})">Details</button>
+              <button 
+                class="btn btn-call" 
+                ${!canCall ? 'disabled' : ''} 
+                onclick="event.stopPropagation(); triggerCall(${rowNum})"
+              >
+                ${status === 'calling' ? 'Calling...' : 'Call'}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderDetail(record, editing = false, adding = false) {
+      currentRecord = record;
+      isEditing = editing;
+      isAdding = adding;
+
+      const fieldsToShow = adding 
+        ? headers.filter(h => !HIDDEN_ADD.includes(h))
+        : headers;
+
+      // Group fields
+      let groupedHtml = '';
+      
+      for (const [groupName, groupFields] of Object.entries(FIELD_GROUPS)) {
+        const relevantFields = groupFields.filter(f => fieldsToShow.includes(f));
+        if (relevantFields.length === 0) continue;
+        
+        // Skip system group in add mode
+        if (adding && groupName === 'System') continue;
+        
+        // Only show Feedback group when call is completed
+        if (groupName === 'Feedback' && record.call_status !== 'completed') continue;
+
+        const fieldsHtml = relevantFields.map(field => {
+          const value = record[field] || '';
+          const isReadonly = !editing || READONLY.includes(field);
+          const isTextarea = TEXTAREA_FIELDS.includes(field);
+          const isRequired = REQUIRED.includes(field);
+
+          // Special handling for team_feedback dropdown
+          if (field === 'team_feedback') {
+            return `
+              <div class="field-row">
+                <span class="field-label">${label(field)}</span>
+                ${editing && !isReadonly
+                  ? `<select class="field-input" name="${field}" style="text-align:right;">
+                      <option value="">Select feedback</option>
+                      <option value="good" ${value === 'good' ? 'selected' : ''}>✅ Good</option>
+                      <option value="ok" ${value === 'ok' ? 'selected' : ''}>⚠️ OK</option>
+                      <option value="bad" ${value === 'bad' ? 'selected' : ''}>❌ Bad</option>
+                    </select>`
+                  : `<span class="field-value">
+                      ${value === 'good' ? '✅ Good' : value === 'ok' ? '⚠️ OK' : value === 'bad' ? '❌ Bad' : '—'}
+                    </span>`
+                }
+              </div>
+            `;
+          }
+
+          // Special handling for outcome and next_action - use display mappings
+          if (field === 'outcome' && !editing) {
+            const displayValue = OUTCOME_DISPLAY[value] || value || '—';
+            return `
+              <div class="field-row">
+                <span class="field-label">${label(field)}</span>
+                <span class="field-value">${escape(displayValue)}</span>
+              </div>
+            `;
+          }
+
+          if (field === 'next_action' && !editing) {
+            const displayValue = NEXT_ACTION_DISPLAY[value] || value || '—';
+            return `
+              <div class="field-row">
+                <span class="field-label">${label(field)}</span>
+                <span class="field-value">${escape(displayValue)}</span>
+              </div>
+            `;
+          }
+
+          if (isTextarea) {
+            return `
+              <div class="field-row textarea-row">
+                <span class="field-label">${label(field)}${isRequired && editing ? ' *' : ''}</span>
+                ${editing && !isReadonly
+                  ? `<textarea class="field-textarea" name="${field}" placeholder="Enter ${label(field).toLowerCase()}...">${escape(value)}</textarea>`
+                  : `<span class="field-value">${escape(value) || '—'}</span>`
+                }
+              </div>
+            `;
+          }
+
+          return `
+            <div class="field-row">
+              <span class="field-label">${label(field)}${isRequired && editing ? ' *' : ''}</span>
+              ${editing && !isReadonly
+                ? `<input class="field-input" type="text" name="${field}" value="${escape(value)}" placeholder="${label(field)}">`
+                : `<span class="field-value${isReadonly ? '' : ' editable'}">${escape(value) || '—'}</span>`
+              }
+            </div>
+          `;
+        }).join('');
+
+        groupedHtml += `
+          <div class="field-group">
+            <div class="field-group-title">${groupName}</div>
+            <div class="field-list">${fieldsHtml}</div>
+          </div>
+        `;
+      }
+
+      // Enable call button when status is not "calling" (allows recalling for testing)
+      const canCall = record.phone_e164?.startsWith('+') && record.call_status !== 'calling';
+      const rowNum = record.__rowNumber;
+
+      document.getElementById('detailView').innerHTML = `
+        <button class="back-btn" onclick="showList()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          Back to Leads
+        </button>
+
+        <div class="detail-view">
+          <div class="detail-header">
+            <span class="detail-title">${adding ? 'New Lead' : escape(record.phone_e164 || 'Lead Details')}</span>
+            <div class="detail-actions">
+              ${!adding && !editing ? `
+                <button class="btn btn-call" style="width:auto; padding:8px 24px;" ${!canCall ? 'disabled' : ''} onclick="event.stopPropagation(); triggerCall(${rowNum})">
+                  ${record.call_status === 'calling' ? 'Calling...' : 'Call Lead'}
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <form id="detailForm" class="detail-body" onsubmit="handleSave(event)">
+            ${groupedHtml}
+          </form>
+
+          <div class="detail-footer">
+            ${adding ? `
+              <button class="btn btn-tertiary" type="button" onclick="showList()">Cancel</button>
+              <button class="btn btn-primary" onclick="handleSave(event)">Add Lead</button>
+            ` : editing ? `
+              <button class="btn btn-tertiary" type="button" onclick="openDetail(${records.indexOf(record)})">Cancel</button>
+              <button class="btn btn-primary" onclick="handleSave(event)">Save Changes</button>
+            ` : `
+              <button class="btn btn-secondary" onclick="openDetail(${records.indexOf(record)}, true)">Edit Lead</button>
+              <button class="btn btn-destructive" onclick="handleDelete(${rowNum})">Delete Lead</button>
+            `}
+          </div>
+        </div>
+      `;
+    }
+
+    // Navigation
+    function showList() {
+      currentRecord = null;
+      isEditing = false;
+      isAdding = false;
+      
+      document.getElementById('listView').classList.remove('hidden');
+      document.getElementById('detailView').classList.add('hidden');
+    }
+
+    function openDetail(index, editing = false) {
+      const record = records[index];
+      if (!record) return;
+      
+      document.getElementById('listView').classList.add('hidden');
+      document.getElementById('detailView').classList.remove('hidden');
+      
+      renderDetail(record, editing, false);
+    }
+
+    function openAddView() {
+      document.getElementById('listView').classList.add('hidden');
+      document.getElementById('detailView').classList.remove('hidden');
+      
+      renderDetail({}, true, true);
+    }
+
+    // Form Handling
+    async function handleSave(e) {
+      e.preventDefault();
+      
+      const form = document.getElementById('detailForm');
+      const formData = new FormData(form);
+      const data = {};
+      
+      for (let [k, v] of formData.entries()) {
+        data[k] = v.trim();
+      }
+
+      // Validation
+      if (!data.phone_e164 || !data.phone_e164.startsWith('+')) {
+        toast('Phone number required (format: +1...)', true);
+        return;
+      }
+      if (!data.property_address) {
+        toast('Address is required', true);
+        return;
+      }
+
+      const rowNumber = isAdding ? null : currentRecord.__rowNumber;
+      await saveRecord(data, rowNumber);
+    }
+
+    async function handleDelete(rowNumber) {
+      // Confirmation dialog
+      const confirmed = confirm('Are you sure you want to delete this lead? This action cannot be undone.');
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch('/delete-row', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheet_row: rowNumber })
+        });
+        
+        const data = await res.json();
+        
+        if (!data.ok) throw new Error(data.error);
+        
+        toast('Lead deleted');
+        await loadData();
+        showList(); // Return to list view after deletion
+      } catch (e) {
+        toast(e.message || 'Failed to delete lead', true);
+      }
+    }
+
+    // Init
+    loadData();
+  </script>
+</body>
+</html>

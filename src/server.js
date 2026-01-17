@@ -203,6 +203,41 @@ async function getHeaders() {
   return headerRes.data.values?.[0] || [];
 }
 
+async function deleteRow(rowNumber) {
+  const sheets = await getSheetsClient();
+  
+  // Get the sheet ID for the tab
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: SHEET_ID,
+  });
+  
+  const sheet = spreadsheet.data.sheets.find(s => s.properties.title === TAB);
+  if (!sheet) {
+    throw new Error(`Sheet tab "${TAB}" not found`);
+  }
+  
+  const sheetId = sheet.properties.sheetId;
+  
+  // Delete the row using batchUpdate
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId: sheetId,
+              dimension: "ROWS",
+              startIndex: rowNumber - 1, // 0-indexed, rowNumber is 1-indexed
+              endIndex: rowNumber, // endIndex is exclusive
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
 // -------------------- Bland webhook schema (matches your payload) --------------------
 // Using .nullable().optional() to handle fields that can be null, undefined, or a value
 const BlandWebhookSchema = z.object({
@@ -438,6 +473,18 @@ app.post("/trigger-call", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Row missing property_address" });
     }
 
+    // Server-side lock: reject if already calling (allow recalling for testing)
+    const currentStatus = (row.call_status || "").toLowerCase();
+    if (currentStatus === "calling") {
+      return res.status(409).json({ 
+        ok: false, 
+        error: "Call already in progress. Please wait for it to complete." 
+      });
+    }
+    
+    // For testing: allow recalling completed/queued/failed calls
+    // Only block if actively calling
+
     const rowNumber = row.__rowNumber;
     const attempts = Number(row.call_attempts || 0) + 1;
 
@@ -636,6 +683,39 @@ app.put("/update-row", async (req, res) => {
     });
   } catch (err) {
     console.error("update-row failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
+ * DELETE /delete-row
+ * Deletes a row from the Google Sheet.
+ * Input: { "sheet_row": 2 }
+ */
+app.delete("/delete-row", async (req, res) => {
+  try {
+    const { sheet_row } = req.body;
+
+    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
+      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    }
+
+    // Prevent deleting header row
+    if (sheet_row === 1) {
+      return res.status(400).json({ ok: false, error: "Cannot delete header row" });
+    }
+
+    await deleteRow(sheet_row);
+
+    console.log(`DELETE /delete-row - deleted row ${sheet_row}`);
+
+    return res.json({
+      ok: true,
+      message: "Row deleted successfully",
+      row_number: sheet_row,
+    });
+  } catch (err) {
+    console.error("delete-row failed:", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
