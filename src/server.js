@@ -10,12 +10,22 @@
 
 import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 // -------------------- App --------------------
 const app = express();
+
+// Enable CORS for all routes
+app.use(cors({
+  origin: true, // Allow all origins (or specify your Cloudflare Pages domain)
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json({ limit: "5mb" }));
 app.use(express.static("public"));
 
