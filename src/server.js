@@ -365,37 +365,45 @@ Ending:
 
 // -------------------- Start Bland call --------------------
 async function startBlandCall({ phone, voiceId, task, webhook, metadata }) {
+  // Detect if it's an India number (+91)
+  const isIndiaNumber = phone.startsWith("+91");
+  
+  const callConfig = {
+    phone_number: phone,
+    voice: voiceId,
+    record: true,
+    wait_for_greeting: false,
+    answered_by_enabled: true,
+    voicemail_action: "hangup",
+    interruption_threshold: 500,
+    block_interruptions: false,
+    language: isIndiaNumber ? "en-IN" : "en-US", // Use Indian English for India numbers
+    model: "base",
+    webhook,
+    metadata,
+    task,
+  };
+
+  console.log(`Starting Bland call to ${phone} (India: ${isIndiaNumber})`);
+
   const resp = await fetch("https://api.bland.ai/v1/calls", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${process.env.BLAND_API_KEY}`,
     },
-    body: JSON.stringify({
-      phone_number: phone,
-      voice: voiceId,
-      record: true,
-      wait_for_greeting: false,
-      answered_by_enabled: true,
-      voicemail_action: "hangup",
-      interruption_threshold: 500,
-      block_interruptions: false,
-      language: "babel-en",
-      model: "base",
-
-      webhook,   // <- THIS is where Bland will POST the results
-      metadata,  // <- THIS is how we know which sheet row to update
-
-      task,
-    }),
+    body: JSON.stringify(callConfig),
   });
 
   if (!resp.ok) {
     const txt = await resp.text();
+    console.error(`Bland API error for ${phone}: ${resp.status} ${txt}`);
     throw new Error(`Bland start call failed: ${resp.status} ${txt}`);
   }
 
-  return await resp.json();
+  const result = await resp.json();
+  console.log(`Bland call started: call_id=${result.call_id || result.id}`);
+  return result;
 }
 
 // -------------------- Routes --------------------
@@ -600,6 +608,39 @@ app.post("/add-row", async (req, res) => {
 });
 
 /**
+ * PUT /update-row
+ * Updates an existing row in the Google Sheet.
+ * Input: { "sheet_row": 2, "data": { "phone_e164": "+1234567890", ... } }
+ */
+app.put("/update-row", async (req, res) => {
+  try {
+    const { sheet_row, data } = req.body;
+
+    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
+      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    }
+
+    if (!data || typeof data !== "object") {
+      return res.status(400).json({ ok: false, error: "Invalid data. Expected { data: { ... } }" });
+    }
+
+    // Update the row with provided data
+    await updateRow(sheet_row, data);
+
+    console.log(`PUT /update-row - updated row ${sheet_row}`);
+
+    return res.json({
+      ok: true,
+      message: "Row updated successfully",
+      row_number: sheet_row,
+    });
+  } catch (err) {
+    console.error("update-row failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
  * POST /run-dialer
  * Reads sheet rows with call_status=queued and starts up to 5 calls.
  */
@@ -725,10 +766,24 @@ app.post("/webhooks/bland", async (req, res) => {
       transcript,
     });
 
+    // Determine call_status based on outcome
+    // Use outcome directly for: opt_out, no_answer, voicemail
+    // Use "completed" for outcomes that mean the call connected: interested, human_followup
+    const callStatusMap = {
+      "opt_out": "opt_out",
+      "no_answer": "no_answer",
+      "voicemail": "voicemail",
+      "interested": "completed",
+      "human_followup": "completed",
+    };
+    const callStatus = callStatusMap[outcome] || "completed";
+
+    console.log(`Webhook received: call_id=${callId}, answered_by=${answeredBy}, outcome=${outcome}, call_status=${callStatus}`);
+
     // Update sheet row
     if (rowNumber) {
       await updateRow(rowNumber, {
-        call_status: outcome === "opt_out" ? "opt_out" : "completed",
+        call_status: callStatus,
         outcome,
         next_action,
         bland_call_id: callId,
