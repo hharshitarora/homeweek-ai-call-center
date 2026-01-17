@@ -17,6 +17,7 @@ import { z } from "zod";
 // -------------------- App --------------------
 const app = express();
 app.use(express.json({ limit: "5mb" }));
+app.use(express.static("public"));
 
 const PORT = process.env.PORT || 3000;
 
@@ -76,17 +77,54 @@ async function readAllRows() {
   });
 
   const values = res.data.values || [];
-  if (values.length === 0) return { headers: [], rows: [] };
+  if (values.length === 0) {
+    console.log("readAllRows: No values found in sheet");
+    return { headers: [], rows: [] };
+  }
 
-  const headers = values[0];
-  const rows = values.slice(1).map((row, idx) => {
-    const obj = {};
-    headers.forEach((h, i) => (obj[h] = row[i] ?? ""));
-    obj.__rowNumber = idx + 2; // header is row 1
-    return obj;
+  const headers = values[0] || [];
+  if (headers.length === 0) {
+    console.log("readAllRows: No headers found");
+    return { headers: [], rows: [] };
+  }
+
+  const rows = values.slice(1)
+    .filter(row => row && row.length > 0) // Filter out completely empty rows
+    .map((row, idx) => {
+      const obj = {};
+      headers.forEach((h, i) => (obj[h] = row[i] ?? ""));
+      obj.__rowNumber = idx + 2; // header is row 1
+      return obj;
+    });
+
+  console.log(`readAllRows: Returning ${headers.length} headers, ${rows.length} rows`);
+  return { headers, rows };
+}
+
+async function readRow(rowNumber) {
+  const sheets = await getSheetsClient();
+
+  // Get headers
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A1:Z1`,
   });
 
-  return { headers, rows };
+  const headers = (headerRes.data.values?.[0] || []);
+
+  // Get specific row
+  const rowRange = `${TAB}!A${rowNumber}:Z${rowNumber}`;
+  const rowRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: rowRange,
+  });
+
+  const rowValues = rowRes.data.values?.[0] || [];
+  const obj = {};
+  headers.forEach((h, i) => (obj[h] = rowValues[i] ?? ""));
+  obj.__rowNumber = rowNumber;
+
+  return obj;
 }
 
 async function updateRow(rowNumber, updates) {
@@ -125,26 +163,68 @@ async function updateRow(rowNumber, updates) {
   });
 }
 
+async function appendRow(rowData) {
+  const sheets = await getSheetsClient();
+
+  // Get headers to determine column order
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A1:Z1`,
+  });
+
+  const headers = (headerRes.data.values?.[0] || []);
+  
+  // Build the row array in header order
+  const newRow = headers.map(header => rowData[header] ?? "");
+
+  // Append to the sheet
+  const result = await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A:Z`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [newRow] },
+  });
+
+  // Extract the row number from the updated range
+  const updatedRange = result.data.updates?.updatedRange || "";
+  const match = updatedRange.match(/!A(\d+):/);
+  const rowNumber = match ? parseInt(match[1], 10) : null;
+
+  return { rowNumber, headers };
+}
+
+async function getHeaders() {
+  const sheets = await getSheetsClient();
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A1:Z1`,
+  });
+  return headerRes.data.values?.[0] || [];
+}
+
 // -------------------- Bland webhook schema (matches your payload) --------------------
+// Using .nullable().optional() to handle fields that can be null, undefined, or a value
 const BlandWebhookSchema = z.object({
   call_id: z.string(),
-  c_id: z.string().optional(),
-  status: z.string().optional(),
-  completed: z.boolean().optional(),
-  answered_by: z.string().optional(),
-  call_length: z.number().optional(),
-  recording_url: z.string().optional(),
-  summary: z.string().optional(),
-  concatenated_transcript: z.string().optional(),
-  to: z.string().optional(),
-  phone_number: z.string().optional(),
+  c_id: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+  completed: z.boolean().nullable().optional(),
+  answered_by: z.string().nullable().optional(),
+  call_length: z.number().nullable().optional(),
+  recording_url: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  concatenated_transcript: z.string().nullable().optional(),
+  to: z.string().nullable().optional(),
+  phone_number: z.string().nullable().optional(),
   metadata: z
     .object({
-      lead_id: z.string().optional(),
-      property_id: z.string().optional(),
-      sheet_row: z.number().optional(),
+      lead_id: z.string().nullable().optional(),
+      property_id: z.string().nullable().optional(),
+      sheet_row: z.number().nullable().optional(),
     })
     .passthrough()
+    .nullable()
     .optional(),
 }).passthrough();
 
@@ -320,6 +400,204 @@ async function startBlandCall({ phone, voiceId, task, webhook, metadata }) {
 
 // -------------------- Routes --------------------
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+// Serve index.html for root path
+app.get("/", (req, res) => {
+  res.sendFile("index.html", { root: "public" });
+});
+
+/**
+ * POST /trigger-call
+ * Triggers a call for a specific sheet row.
+ * Input: { "sheet_row": 2 }
+ */
+app.post("/trigger-call", async (req, res) => {
+  try {
+    const { sheet_row } = req.body;
+
+    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
+      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    }
+
+    // Read the specific row
+    const row = await readRow(sheet_row);
+
+    if (!row.phone_e164 || !row.phone_e164.trim().startsWith("+")) {
+      return res.status(400).json({ ok: false, error: "Row missing valid phone_e164" });
+    }
+
+    if (!row.property_address || !row.property_address.trim()) {
+      return res.status(400).json({ ok: false, error: "Row missing property_address" });
+    }
+
+    const rowNumber = row.__rowNumber;
+    const attempts = Number(row.call_attempts || 0) + 1;
+
+    // Mark as calling
+    await updateRow(rowNumber, {
+      call_status: "calling",
+      call_attempts: String(attempts),
+      last_call_at: new Date().toISOString(),
+    });
+
+    const task = buildPromptFromRow(row);
+
+    // Metadata includes sheet_row for webhook -> update correct row
+    const metadata = {
+      lead_id: row.lead_id || "",
+      property_id: row.property_id || "",
+      sheet_row: rowNumber,
+    };
+
+    const startedAt = new Date().toISOString();
+
+    try {
+      const blandResp = await startBlandCall({
+        phone: row.phone_e164,
+        voiceId: row.voice_id || process.env.DEFAULT_VOICE_ID || "default",
+        task,
+        webhook: process.env.PUBLIC_WEBHOOK_URL,
+        metadata,
+      });
+
+      const callId = blandResp.call_id || blandResp.id || "";
+
+      // Save bland_call_id
+      await updateRow(rowNumber, {
+        bland_call_id: callId,
+      });
+
+      // Save to Supabase
+      await supabase.from("calls").insert({
+        lead_id: row.lead_id || null,
+        property_id: row.property_id || null,
+        phone_e164: row.phone_e164,
+        bland_call_id: callId || null,
+        status: "calling",
+        outcome: null,
+        next_action: null,
+        attempt: attempts,
+        started_at: startedAt,
+        raw_webhook: { started_response: blandResp },
+      });
+
+      return res.json({
+        ok: true,
+        call_id: callId,
+        sheet_row: rowNumber,
+        message: "Call started successfully",
+      });
+    } catch (err) {
+      console.error("Trigger call error:", err);
+
+      await updateRow(rowNumber, {
+        call_status: "failed",
+        outcome: "human_followup",
+        next_action: "human_followup",
+        notes: `Failed to start call: ${String(err.message || err)}`,
+      });
+
+      await supabase.from("calls").insert({
+        lead_id: row.lead_id || null,
+        property_id: row.property_id || null,
+        phone_e164: row.phone_e164,
+        status: "failed",
+        outcome: "human_followup",
+        next_action: "human_followup",
+        attempt: attempts,
+        started_at: startedAt,
+        ended_at: new Date().toISOString(),
+        raw_webhook: { start_error: String(err.message || err) },
+      });
+
+      return res.status(500).json({
+        ok: false,
+        error: `Failed to start call: ${String(err.message || err)}`,
+      });
+    }
+  } catch (err) {
+    console.error("trigger-call failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
+ * GET /rows
+ * Returns all sheet rows for frontend display.
+ */
+app.get("/rows", async (req, res) => {
+  try {
+    console.log("GET /rows - fetching rows...");
+    const { headers, rows } = await readAllRows();
+    console.log(`GET /rows - found ${headers?.length || 0} headers, ${rows?.length || 0} rows`);
+    return res.json({ ok: true, headers: headers || [], rows: rows || [] });
+  } catch (err) {
+    console.error("get rows failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
+ * GET /headers
+ * Returns the sheet headers for the add record form.
+ */
+app.get("/headers", async (req, res) => {
+  try {
+    const headers = await getHeaders();
+    return res.json({ ok: true, headers });
+  } catch (err) {
+    console.error("get headers failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// Generate a unique ID with prefix
+function generateId(prefix) {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `${prefix}_${timestamp}${random}`;
+}
+
+/**
+ * POST /add-row
+ * Adds a new row to the Google Sheet.
+ * Input: { "data": { "phone_e164": "+1234567890", "property_address": "...", ... } }
+ * Auto-generates: lead_id, property_id, call_status, call_attempts, created_at
+ */
+app.post("/add-row", async (req, res) => {
+  try {
+    const { data } = req.body;
+
+    if (!data || typeof data !== "object") {
+      return res.status(400).json({ ok: false, error: "Invalid data. Expected { data: { ... } }" });
+    }
+
+    // Auto-generate IDs and set defaults
+    const rowData = {
+      ...data,
+      lead_id: data.lead_id || generateId("lead"),
+      property_id: data.property_id || generateId("prop"),
+      call_status: data.call_status || "queued",
+      call_attempts: data.call_attempts || "0",
+      created_at: new Date().toISOString(),
+    };
+
+    const { rowNumber } = await appendRow(rowData);
+
+    console.log(`POST /add-row - added row at position ${rowNumber}, lead_id: ${rowData.lead_id}, property_id: ${rowData.property_id}`);
+
+    return res.json({
+      ok: true,
+      message: "Row added successfully",
+      row_number: rowNumber,
+      lead_id: rowData.lead_id,
+      property_id: rowData.property_id,
+    });
+  } catch (err) {
+    console.error("add-row failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 /**
  * POST /run-dialer
