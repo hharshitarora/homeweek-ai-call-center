@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="api-base-url" content="https://homeweek-ai-call-center-production.up.railway.app">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="shortcut icon" type="image/png" href="favicon.png">
   <title>Homeseek</title>
   <style>
     :root {
@@ -70,6 +72,13 @@
       font-size: 21px;
       font-weight: 600;
       letter-spacing: -0.01em;
+    }
+
+    .navbar-logo {
+      height: 144px;
+      width: auto;
+      object-fit: contain;
+      max-width: 250px;
     }
 
     .navbar-actions {
@@ -557,7 +566,7 @@
   <div class="app">
     <nav class="navbar">
       <div class="navbar-content">
-        <h1>Homeseek</h1>
+        <img src="Homeseek logo.jpg" alt="Homeseek" class="navbar-logo">
         <div class="navbar-actions">
           <span id="recordCount" class="record-count"></span>
           <button class="btn btn-secondary" onclick="loadData()">Refresh</button>
@@ -777,12 +786,15 @@
         const outcomeDisplay = OUTCOME_DISPLAY[r.outcome] || r.outcome || '—';
         const nextActionDisplay = NEXT_ACTION_DISPLAY[r.next_action] || r.next_action || '—';
         
+        const displayName = r.lead_name || r.phone_e164 || 'Untitled';
+        const displaySubtitle = r.lead_name ? r.phone_e164 : `ID: ${r.lead_id || '-'}`;
+        
         return `
           <div class="card" onclick="openDetail(${i})">
             <div class="card-header">
               <div class="card-title-group">
-                <div class="card-title">${escape(r.phone_e164 || 'Untitled')}</div>
-                <div class="card-subtitle">ID: ${r.lead_id || '-'}</div>
+                <div class="card-title">${escape(displayName)}</div>
+                <div class="card-subtitle">${escape(displaySubtitle)}</div>
               </div>
               <span class="status-pill status-${status}">
                 <span class="status-dot"></span>
