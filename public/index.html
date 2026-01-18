@@ -605,6 +605,8 @@
     
     const LABELS = {
       'phone_e164': 'Phone',
+      'lead_name': 'Lead Name',
+      'property_name': 'Property Name',
       'property_address': 'Address',
       'property_beds_baths': 'Beds/Baths',
       'property_price_inr': 'Price',
@@ -644,8 +646,8 @@
     };
 
     const FIELD_GROUPS = {
-      'Contact': ['phone_e164'],
-      'Property': ['property_address', 'property_beds_baths', 'property_price_inr', 'property_highlights', 'property_url', 'showing_windows'],
+      'Contact': ['phone_e164', 'lead_name'],
+      'Property': ['property_name', 'property_address', 'property_beds_baths', 'property_price_inr', 'property_highlights', 'property_url', 'showing_windows'],
       'Call': ['call_status', 'call_attempts', 'last_call_at', 'outcome', 'next_action', 'voice_id'],
       'Feedback': ['team_feedback', 'feedback_notes'],
       'Notes': ['notes'],

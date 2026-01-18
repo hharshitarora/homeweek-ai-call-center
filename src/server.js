@@ -273,8 +273,39 @@ const BlandWebhookSchema = z.object({
     .optional(),
 }).passthrough();
 
-function classifyOutcome({ answeredBy, summary, transcript }) {
+function classifyOutcome({ answeredBy, summary, transcript, completed, callLength, dispositionTag }) {
+  // Use Bland's disposition_tag if available (Bland's own classification)
+  if (dispositionTag) {
+    const dispositionLower = dispositionTag.toLowerCase();
+    
+    // Map Bland's disposition tags to our outcomes
+    if (dispositionLower === "interested") {
+      return { outcome: "interested", next_action: "human_followup" };
+    }
+    if (dispositionLower === "not_interested" || dispositionLower === "not interested") {
+      return { outcome: "human_followup", next_action: "human_followup" };
+    }
+    if (dispositionLower === "opt_out" || dispositionLower === "opt out") {
+      return { outcome: "opt_out", next_action: "none" };
+    }
+    if (dispositionLower === "voicemail") {
+      return { outcome: "voicemail", next_action: "call_back_later" };
+    }
+    if (dispositionLower === "no_answer" || dispositionLower === "no answer") {
+      return { outcome: "no_answer", next_action: "call_back_later" };
+    }
+    // If disposition_tag exists but doesn't match known values, still use it as signal
+    // but fall through to our own analysis
+  }
+
   const text = `${summary || ""}\n${transcript || ""}`.toLowerCase();
+  
+  // Check if there's a meaningful conversation (transcript with user responses)
+  const hasConversation = transcript && (
+    transcript.includes("user:") || 
+    transcript.toLowerCase().includes("user") ||
+    (transcript.length > 100 && callLength && callLength > 5) // Substantial transcript with reasonable duration
+  );
 
   // Opt out
   if (
@@ -286,27 +317,46 @@ function classifyOutcome({ answeredBy, summary, transcript }) {
     return { outcome: "opt_out", next_action: "none" };
   }
 
-  // Not human = voicemail/no answer
-  if (answeredBy && answeredBy.toLowerCase() !== "human") {
+  // If there's a conversation, analyze it regardless of answered_by value
+  // "unknown" can still mean a human answered, just not detected
+  if (hasConversation) {
+    // Strong "interested" signals
+    if (
+      text.includes("agreed") &&
+      (text.includes("walkthrough") || text.includes("visit") || text.includes("showing"))
+    ) {
+      return { outcome: "interested", next_action: "human_followup" };
+    }
+    if (text.includes("coordinate a visit") || text.includes("arrange a visit")) {
+      return { outcome: "interested", next_action: "human_followup" };
+    }
+    
+    // Check for interest in the summary (from the webhook payload example)
+    if (text.includes("expressed interest") || text.includes("interested in learning more")) {
+      return { outcome: "interested", next_action: "human_followup" };
+    }
+
+    // Soft interest / browsing
+    if (text.includes("just browsing") || text.includes("exploring options")) {
+      return { outcome: "human_followup", next_action: "human_followup" };
+    }
+
+    // If call completed with conversation but no clear signals, default to follow-up
+    if (completed) {
+      return { outcome: "human_followup", next_action: "human_followup" };
+    }
+  }
+
+  // Not human = voicemail/no answer (only if no conversation detected)
+  if (answeredBy && answeredBy.toLowerCase() !== "human" && !hasConversation) {
     if (answeredBy.toLowerCase().includes("voicemail")) {
       return { outcome: "voicemail", next_action: "call_back_later" };
     }
     return { outcome: "no_answer", next_action: "call_back_later" };
   }
 
-  // Strong “interested” signals
-  if (
-    text.includes("agreed") &&
-    (text.includes("walkthrough") || text.includes("visit") || text.includes("showing"))
-  ) {
-    return { outcome: "interested", next_action: "human_followup" };
-  }
-  if (text.includes("coordinate a visit") || text.includes("arrange a visit")) {
-    return { outcome: "interested", next_action: "human_followup" };
-  }
-
-  // Soft interest / browsing
-  if (text.includes("just browsing") || text.includes("exploring options")) {
+  // Default: if we got here and call completed, assume human follow-up needed
+  if (completed) {
     return { outcome: "human_followup", next_action: "human_followup" };
   }
 
@@ -351,9 +401,14 @@ CRITICAL BEHAVIOR RULES
   4) Escalate to agent follow-up only after attempting clarification
 
 --------------------------------
+LEAD CONTEXT
+--------------------------------
+${row.lead_name ? `Lead Name: ${row.lead_name}\n` : ''}Phone: ${row.phone_e164}
+
+--------------------------------
 PROPERTY CONTEXT (FACTS ONLY)
 --------------------------------
-Address: ${row.property_address}
+${row.property_name ? `Property Name: ${row.property_name}\n` : ''}Address: ${row.property_address}
 Configuration: ${row.property_beds_baths}
 Price: ${row.property_price_inr}
 Highlights:
@@ -850,10 +905,16 @@ app.post("/webhooks/bland", async (req, res) => {
     const propertyId = meta.property_id || "";
     const rowNumber = meta.sheet_row || null;
 
+    // Extract Bland's disposition_tag if available (Bland's own classification)
+    const dispositionTag = payload.disposition_tag || null;
+
     const { outcome, next_action } = classifyOutcome({
       answeredBy,
       summary,
       transcript,
+      completed: payload.completed || false,
+      callLength: payload.call_length || null,
+      dispositionTag,
     });
 
     // Determine call_status based on outcome
