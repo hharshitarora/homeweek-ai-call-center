@@ -4,6 +4,13 @@
  *
  * Endpoints:
  *   GET  /health
+ *   GET  /rows
+ *   GET  /headers
+ *   POST /add-row
+ *   POST /upload-csv
+ *   PUT  /update-row
+ *   DELETE /delete-row
+ *   POST /trigger-call
  *   POST /run-dialer
  *   POST /webhooks/bland
  */
@@ -14,6 +21,8 @@ import cors from "cors";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
+import multer from "multer";
+import { parse } from "csv-parse/sync";
 
 // -------------------- App --------------------
 const app = express();
@@ -27,7 +36,9 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: "5mb" }));
-app.use(express.static("public"));
+
+// Configure multer for file uploads (memory storage)
+const upload = multer({ storage: multer.memoryStorage() });
 
 const PORT = process.env.PORT || 3000;
 
@@ -251,6 +262,99 @@ async function deleteRow(rowNumber) {
   });
 }
 
+async function deleteRowsBulk(rowNumbers) {
+  if (!rowNumbers || rowNumbers.length === 0) {
+    return;
+  }
+
+  const sheets = await getSheetsClient();
+  
+  // Get the sheet ID for the tab
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: SHEET_ID,
+  });
+  
+  const sheet = spreadsheet.data.sheets.find(s => s.properties.title === TAB);
+  if (!sheet) {
+    throw new Error(`Sheet tab "${TAB}" not found`);
+  }
+  
+  const sheetId = sheet.properties.sheetId;
+
+  // Sort row numbers in descending order to avoid index shifting issues
+  const sortedRows = [...rowNumbers].filter(r => r >= 2).sort((a, b) => b - a);
+
+  if (sortedRows.length === 0) {
+    return;
+  }
+
+  // Create delete requests for each row
+  const requests = sortedRows.map(rowNumber => ({
+    deleteDimension: {
+      range: {
+        sheetId: sheetId,
+        dimension: "ROWS",
+        startIndex: rowNumber - 1, // 0-indexed, rowNumber is 1-indexed
+        endIndex: rowNumber, // endIndex is exclusive
+      },
+    },
+  }));
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { requests },
+  });
+}
+
+// -------------------- Batch Update Rows --------------------
+
+function getColLetter(n) {
+  let char = "";
+  while (n >= 0) {
+    char = String.fromCharCode(n % 26 + 65) + char;
+    n = Math.floor(n / 26) - 1;
+  }
+  return char;
+}
+
+async function updateRowsBatch(updates) {
+  const sheets = await getSheetsClient();
+
+  // Get headers to map keys to columns
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${TAB}!A1:Z1`,
+  });
+
+  const headers = (headerRes.data.values?.[0] || []);
+  const headerIndex = Object.fromEntries(headers.map((h, i) => [h, i]));
+
+  // Construct data for batchUpdate
+  const data = updates.map(({ rowNumber, values }) => {
+    return Object.entries(values).map(([key, val]) => {
+      const colIdx = headerIndex[key];
+      if (colIdx === undefined) return null;
+      
+      const colLetter = getColLetter(colIdx);
+      
+      return {
+        range: `${TAB}!${colLetter}${rowNumber}`,
+        values: [[val]]
+      };
+    }).filter(Boolean);
+  }).flat();
+
+  if (data.length === 0) return;
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    resource: {
+      valueInputOption: "RAW",
+      data: data
+    }
+  });
+}
+
 // -------------------- Bland webhook schema (matches your payload) --------------------
 // Using .nullable().optional() to handle fields that can be null, undefined, or a value
 const BlandWebhookSchema = z.object({
@@ -371,117 +475,146 @@ function buildPromptFromRow(row) {
   return `
 You are a professional real estate calling agent representing Homeseek Realtors, a trusted real estate advisory based in Gurugram. Homeseek’s mission is to be a partner in simplifying the process of finding, evaluating, and purchasing residential property.
 
-You are a trained property consultant who:
-- Speaks confidently, professionally, and warmly
-- Does NOT sound like a bot or proxy
-- Adapts naturally to Hinglish when the lead uses Hindi
-
-Your role in this call:
-- Introduce the area and the project
-- Gauge interest and intent
-- Answer project- and area-related questions confidently
-- Qualify the lead for senior agent follow-up
-
-You are NOT authorized to:
-- Negotiate pricing
-- Guarantee availability
-- Make legal or possession claims
-- Provide details not supported by the project facts or safe general real estate context
+You are calling as a member of the Homeseek team.
+You speak confidently, professionally, and warmly.
+You do NOT sound like a bot or proxy.
 
 --------------------------------
 LANGUAGE & HINGLISH BEHAVIOR
 --------------------------------
 Default language: English.
 
-If the user responds in Hindi or uses a Hindi/English mix:
-- Reply initially in Hinglish
-- Then continue in English unless the user continues in Hindi
+If the lead responds in Hindi or Hinglish:
+- Reply naturally in Hinglish once
+- Continue in English unless the lead continues in Hindi
+- Do NOT force Hindi on English-speaking leads
 
-Do NOT force Hindi on users who speak only English.
+--------------------------------
+YOUR ROLE IN THIS CALL
+--------------------------------
+- Introduce the area and the project
+- Gauge interest and intent
+- Answer project- and area-related questions confidently
+- Qualify the lead for senior agent follow-up
+
+This is a lead-generation call, not a closing call.
+
+--------------------------------
+YOU ARE NOT AUTHORIZED TO
+--------------------------------
+- Negotiate pricing
+- Guarantee availability or possession
+- Make legal or possession claims
+- Provide details not supported by project facts or safe general real estate context
 
 --------------------------------
 CRITICAL BEHAVIOR RULES
 --------------------------------
-- Speak naturally, concisely, confidently, and empathetically
+- Speak naturally, concise, confident, and empathetic
 - Ask ONE question at a time
-- Pause and listen fully after each question or answer
+- Pause and listen fully after each response
 - Never rush to end the call
 - Do NOT repeat apologies
-- Do NOT say “I can’t help” without offering a helpful alternative
-- If a lead challenges a fact:
-  1) Acknowledge the concern calmly
-  2) Attempt clarification or reframe
-  3) Provide a general real estate insight if appropriate
-  4) Escalate to senior agent follow-up only after attempting clarification
+- Do NOT say “I can’t help” without offering a constructive next step
+
+If the lead challenges a fact:
+1) Acknowledge calmly  
+2) Clarify or reframe using available knowledge  
+3) Provide general real estate context if appropriate  
+4) Escalate to senior agent follow-up only if needed  
 
 --------------------------------
 LEAD CONTEXT
 --------------------------------
 ${row.lead_name ? `Lead Name: ${row.lead_name}` : 'Lead name not provided'}
+Phone Number: ${row.phone_e164}
+
+You are calling this person directly as part of a professional outreach by Homeseek Realtors.
 
 --------------------------------
-PROJECT CONTEXT (FACTS ONLY)
+PROJECT KNOWLEDGE — TULIP MONSELLA
 --------------------------------
-Project: ${row.property_name}
-Area: ${row.property_address}
-Configuration: ${row.property_beds_baths}
-Price: ${row.property_price_inr}
+Tulip Monsella is a premium luxury residential project located on Golf Course Road, Sector 53, Gurgaon. It is positioned for high-end end users and long-term investors seeking large, fully loaded homes in a prime central location.
 
-Highlights:
-${row.property_highlights}
+The project spans approximately 20 acres and offers a limited collection of 3, 4, and 5 BHK residences, designed with a focus on privacy, lifestyle, and construction quality.
 
-Showings available: ${row.showing_windows}
-Listing URL: ${row.property_url}
+CONFIGURATION & POSITIONING
+- 3, 4, and 5 BHK residences
+- 3 BHK starts from approx. 2299 sq. ft.
+- Fully loaded apartments
+- Private lift lobbies
+- VRV air conditioning
+- Air-conditioned entrance lobbies
+- High-speed elevators
 
-Use ONLY these facts when discussing specific details.
+LOCATION & AREA CONTEXT
+- Sector 53, Golf Course Road, Gurgaon
+- One of Gurgaon’s most premium residential corridors
+- Strong connectivity to business hubs, schools, and daily conveniences
+
+AMENITIES & LIFESTYLE
+- Approx. 1 lakh sq. ft. clubhouse
+- Mini movie theater
+- Business center
+- Gym and fitness facilities
+- Swimming pool
+- Landscaped green areas
+- Pet-friendly zones
+- 2.5 acres dedicated sports academy
+
+BUILDER PROFILE — TULIP GROUP
+Tulip Group is a well-regarded Gurgaon-based developer known for timely delivery, a zero-debt operating model, and the use of modern construction technologies such as Mivan.
+
+PRICING & PAYMENT (INDICATIVE ONLY)
+- Pricing starts around ₹8.5 Cr* (inventory dependent)
+- Approx. ₹40,000 per sq. ft.* (indicative)
+- Limited inventory may offer structured payment plans such as 30:70 or 35:35:30
+
+All pricing, availability, and payment details must be confirmed by a senior agent.
+
+POSSESSION
+- Expected possession around 2028 (indicative, not guaranteed)
 
 --------------------------------
-GENERAL REAL ESTATE GUIDANCE (SAFE, PROFESSIONAL)
+GENERAL REAL ESTATE GUIDANCE
 --------------------------------
-When a question is outside the provided facts:
-- Use general real estate knowledge (e.g., typical amenities, agent roles, buying process)
+If a question is outside the provided project facts:
+- Use safe, general real estate knowledge
 - Be informative, not speculative
 
-Example fallback:
-“That specific detail isn’t listed. In many modern residential projects, clubhouses typically include common facilities, and additional services can vary. I can confirm this with the senior agent.”
+Example:
+“That detail isn’t specifically listed. In many luxury residential projects, certain services or features can vary. The senior agent can confirm the exact details for you.”
 
 --------------------------------
 CONVERSATION FLOW (FOLLOW THIS ORDER)
 --------------------------------
 
-**Opening / Hook**
+Opening  
 “Hi, I’m calling from Homeseek Realtors. Is this a good time to talk?”
 
-If “No”:
-- “Thank you for your time — have a great day.”
+If No →  
+“Understood. Thank you for your time.”
 
-**Location & Interest Check**
-“Are you currently looking for properties around Golf Course Road or nearby sectors?”
+Interest & Location Check  
+“Are you currently exploring properties around Golf Course Road or nearby sectors?”
 
-**Area + Project Introduction**
-“We’re reaching out because we have an interesting project in the Golf Course Road area called *${row.property_name}*. It offers premium residences with a range of amenities. Does that sound relevant to what you’re exploring?”
+Project Introduction  
+“We’re reaching out because we’re handling a premium project on Golf Course Road called Tulip Monsella. It offers spacious luxury residences with a strong amenity setup. Does that align with what you’re looking for?”
 
-**Qualification – End User vs Investor**
-“Quick question — are you looking as an end user or as an investor?”
-“Are you actively looking to move ahead soon, or just exploring options at the moment?”
+Qualification  
+“Just to understand better — are you looking as an end user or as an investor?”  
+“Are you actively looking to move ahead soon, or still exploring options?”  
 “Do you have a budget range in mind at this stage?”
 
-**Project & Amenities Q&A**
-- Answer using project facts first
-- If asked about the builder or area benefits:
-  - Share general information about the developer if available (e.g., reputation or track record)
-  - Provide relevant area context such as connectivity, schools, or hospitals
+Q&A  
+Answer using project knowledge first.  
+Escalate only when confirmation is required.
 
-If a question is outside the listed facts, use general real estate guidance as outlined above.
+Soft Close  
+“Based on your interest, the senior agent can follow up to discuss details and coordinate a site visit if needed.”
 
-**Soft Close / Next Steps**
-“Thanks for sharing. Based on your interest, the senior agent can follow up to discuss next steps, coordinate a site visit, and go over the details.”
-
-**Ending**
-“Thank you for your time — I’ll ensure this is passed along to the senior agent.”
-
-
-`.trim();
+Ending  
+“Thank you for your time. I’ll ensure this is shared for follow-up.”`.trim();
 }
 
 
@@ -555,10 +688,6 @@ app.post("/trigger-call", async (req, res) => {
 
     if (!row.phone_e164 || !row.phone_e164.trim().startsWith("+")) {
       return res.status(400).json({ ok: false, error: "Row missing valid phone_e164" });
-    }
-
-    if (!row.property_address || !row.property_address.trim()) {
-      return res.status(400).json({ ok: false, error: "Row missing property_address" });
     }
 
     // Server-side lock: reject if already calling (allow recalling for testing)
@@ -743,6 +872,149 @@ app.post("/add-row", async (req, res) => {
 });
 
 /**
+ * Normalize phone number for India-only calling
+ * - If number is `91XXXXXXXXXX` → convert to `+91XXXXXXXXXX`
+ * - If number is `XXXXXXXXXX` → convert to `+91XXXXXXXXXX`
+ * - Returns null if invalid
+ */
+function normalizePhoneForIndia(phone) {
+  if (!phone || typeof phone !== "string") return null;
+  
+  // Remove all non-digit characters
+  const digits = phone.replace(/\D/g, "");
+  
+  // If it's already in +91 format, validate length
+  if (phone.startsWith("+91")) {
+    const numPart = phone.substring(3).replace(/\D/g, "");
+    if (numPart.length === 10) {
+      return `+91${numPart}`;
+    }
+    return null;
+  }
+  
+  // If it starts with 91 and has 12 digits total (91 + 10 digits)
+  if (digits.startsWith("91") && digits.length === 12) {
+    return `+91${digits.substring(2)}`;
+  }
+  
+  // If it's 10 digits, assume it's an India number
+  if (digits.length === 10) {
+    return `+91${digits}`;
+  }
+  
+  // Invalid format
+  return null;
+}
+
+/**
+ * POST /upload-csv
+ * Accepts a CSV file via multipart/form-data and imports leads.
+ * CSV format: Name, Mobile Number, Email, Date, Interested in
+ * Ignores Type column and all other columns.
+ */
+app.post("/upload-csv", upload.single("csv"), async (req, res) => {
+  try {
+    console.log("POST /upload-csv - request received");
+    console.log("File:", req.file ? "present" : "missing");
+    console.log("Body keys:", Object.keys(req.body || {}));
+    
+    if (!req.file) {
+      console.log("No file in request");
+      return res.status(400).json({ ok: false, error: "No CSV file provided" });
+    }
+
+    // Parse CSV
+    const csvContent = req.file.buffer.toString("utf8");
+    let records;
+    
+    try {
+      records = parse(csvContent, {
+        columns: true,
+        skip_empty_lines: true,
+        trim: true,
+        relax_column_count: true, // Allow extra columns
+      });
+    } catch (parseError) {
+      console.error("CSV parse error:", parseError);
+      return res.status(400).json({ ok: false, error: `Invalid CSV format: ${parseError.message}` });
+    }
+
+    if (records.length === 0) {
+      return res.status(400).json({ ok: false, error: "CSV file is empty or has no valid rows" });
+    }
+
+    // Get headers to determine column mapping
+    const headers = await getHeaders();
+    
+    let inserted = 0;
+    let skipped = 0;
+    const errors = [];
+
+    // Process each row
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i];
+      
+      // Extract required fields (case-insensitive matching)
+      const name = row["Name"] || row["name"] || "";
+      const mobileNumber = row["Mobile Number"] || row["mobile number"] || row["Mobile"] || row["mobile"] || "";
+      const email = row["Email"] || row["email"] || "";
+      // Date and Interested in are not stored, but we read them for validation if needed
+      
+      // Normalize phone number
+      const phoneE164 = normalizePhoneForIndia(mobileNumber);
+      
+      if (!phoneE164) {
+        skipped++;
+        errors.push(`Row ${i + 2}: Invalid phone number "${mobileNumber}"`);
+        continue;
+      }
+
+      // Build row data matching the sheet schema
+      const rowData = {
+        lead_name: name.trim() || "",
+        phone_e164: phoneE164,
+        email: email.trim() || "",
+        call_status: "queued",
+        call_attempts: "0",
+        created_at: new Date().toISOString(),
+      };
+
+      // Auto-generate IDs
+      rowData.lead_id = generateId("lead");
+      rowData.property_id = generateId("prop");
+
+      // Fill in any other required headers with empty strings
+      headers.forEach(header => {
+        if (!(header in rowData)) {
+          rowData[header] = "";
+        }
+      });
+
+      try {
+        await appendRow(rowData);
+        inserted++;
+      } catch (appendError) {
+        skipped++;
+        errors.push(`Row ${i + 2}: Failed to append - ${appendError.message}`);
+        console.error(`Failed to append row ${i + 2}:`, appendError);
+      }
+    }
+
+    console.log(`POST /upload-csv - inserted: ${inserted}, skipped: ${skipped}`);
+
+    return res.json({
+      ok: true,
+      inserted,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (err) {
+    console.error("upload-csv failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
  * PUT /update-row
  * Updates an existing row in the Google Sheet.
  * Input: { "sheet_row": 2, "data": { "phone_e164": "+1234567890", ... } }
@@ -809,97 +1081,151 @@ app.delete("/delete-row", async (req, res) => {
 });
 
 /**
+ * DELETE /delete-rows-bulk
+ * Deletes multiple rows from the Google Sheet.
+ * Input: { "sheet_rows": [2, 3, 5] }
+ */
+app.delete("/delete-rows-bulk", async (req, res) => {
+  try {
+    const { sheet_rows } = req.body;
+
+    if (!Array.isArray(sheet_rows) || sheet_rows.length === 0) {
+      return res.status(400).json({ ok: false, error: "Invalid sheet_rows. Must be a non-empty array of row numbers >= 2" });
+    }
+
+    // Validate all row numbers
+    const invalidRows = sheet_rows.filter(r => typeof r !== "number" || r < 2);
+    if (invalidRows.length > 0) {
+      return res.status(400).json({ ok: false, error: `Invalid row numbers: ${invalidRows.join(", ")}. All must be >= 2` });
+    }
+
+    // Prevent deleting header row
+    if (sheet_rows.includes(1)) {
+      return res.status(400).json({ ok: false, error: "Cannot delete header row" });
+    }
+
+    await deleteRowsBulk(sheet_rows);
+
+    console.log(`DELETE /delete-rows-bulk - deleted ${sheet_rows.length} rows`);
+
+    return res.json({
+      ok: true,
+      message: `${sheet_rows.length} row(s) deleted successfully`,
+      deleted_count: sheet_rows.length,
+    });
+  } catch (err) {
+    console.error("delete-rows-bulk failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
  * POST /run-dialer
- * Reads sheet rows with call_status=queued and starts up to 5 calls.
+ * Bulk Dialing using Bland v2 Batches.
+ * Reads queued rows and starts batch calls.
+ * Input: { "limit": 25 } (default 5, max 50)
  */
 app.post("/run-dialer", async (req, res) => {
   try {
+    const { limit = 5 } = req.body;
+    const maxRows = Math.min(Math.max(Number(limit), 1), 50);
+
     const { rows } = await readAllRows();
 
+    // Filter leads that are ready to call
     const queued = rows
-  .filter(r => String(r.call_status || "").toLowerCase() === "queued")
-  .filter(r => Number(r.call_attempts || 0) < 3)
-  .filter(r => String(r.phone_e164 || "").trim().startsWith("+"))
-  .filter(r => String(r.property_address || "").trim().length > 0);
+      .filter(r => String(r.call_status || "").toLowerCase() === "queued")
+      .filter(r => Number(r.call_attempts || 0) < 3)
+      .filter(r => String(r.phone_e164 || "").trim().startsWith("+"))
+      .slice(0, maxRows);
 
-
-    const batch = queued.slice(0, 5);
-
-    for (const row of batch) {
-      const rowNumber = row.__rowNumber;
-      const attempts = Number(row.call_attempts || 0) + 1;
-
-      // mark as calling
-      await updateRow(rowNumber, {
-        call_status: "calling",
-        call_attempts: String(attempts),
-        last_call_at: new Date().toISOString(),
-      });
-
-      const task = buildPromptFromRow(row);
-
-      // IMPORTANT: metadata includes sheet_row for webhook -> update correct row
-      const metadata = {
-        lead_id: row.lead_id,
-        property_id: row.property_id,
-        sheet_row: rowNumber,
-      };
-
-      const startedAt = new Date().toISOString();
-
-      try {
-        const blandResp = await startBlandCall({
-          phone: row.phone_e164,
-          voiceId: row.voice_id || DEFAULT_VOICE_ID,
-          task,
-          webhook: process.env.PUBLIC_WEBHOOK_URL,
-          metadata,
-        });
-
-        const callId = blandResp.call_id || blandResp.id || "";
-
-        await updateRow(rowNumber, {
-          bland_call_id: callId,
-        });
-
-        await supabase.from("calls").insert({
-          lead_id: row.lead_id,
-          property_id: row.property_id,
-          phone_e164: row.phone_e164,
-          bland_call_id: callId || null,
-          status: "calling",
-          outcome: null,
-          next_action: null,
-          attempt: attempts,
-          started_at: startedAt,
-          raw_webhook: { started_response: blandResp },
-        });
-      } catch (err) {
-        console.error("Dialer error:", err);
-
-        await updateRow(rowNumber, {
-          call_status: "failed",
-          outcome: "human_followup",
-          next_action: "human_followup",
-          notes: `Failed to start call: ${String(err.message || err)}`,
-        });
-
-        await supabase.from("calls").insert({
-          lead_id: row.lead_id,
-          property_id: row.property_id,
-          phone_e164: row.phone_e164,
-          status: "failed",
-          outcome: "human_followup",
-          next_action: "human_followup",
-          attempt: attempts,
-          started_at: startedAt,
-          ended_at: new Date().toISOString(),
-          raw_webhook: { start_error: String(err.message || err) },
-        });
-      }
+    if (queued.length === 0) {
+      return res.json({ ok: true, processed: 0, message: "No queued leads found" });
     }
 
-    return res.json({ ok: true, processed: batch.length });
+    // Prepare Call Objects for Bland Batch
+    const callObjects = queued.map(row => {
+      const task = buildPromptFromRow(row);
+      const isIndiaNumber = row.phone_e164.startsWith("+91");
+
+      return {
+        phone_number: row.phone_e164,
+        task: task,
+        language: isIndiaNumber ? "en-IN" : "en-US",
+        // Metadata to link back to sheet row
+        metadata: {
+          lead_id: row.lead_id,
+          property_id: row.property_id,
+          sheet_row: row.__rowNumber,
+        }
+      };
+    });
+
+    // Prepare Sheet Updates (mark as calling)
+    const startedAt = new Date().toISOString();
+    const sheetUpdates = queued.map(row => {
+      const attempts = Number(row.call_attempts || 0) + 1;
+      return {
+        rowNumber: row.__rowNumber,
+        values: {
+          call_status: "calling",
+          call_attempts: String(attempts),
+          last_call_at: startedAt
+        }
+      };
+    });
+
+    // 1. Send Batch to Bland (v2/batches/create)
+    console.log(`Triggering Bland Batch for ${queued.length} numbers`);
+    
+    // Use first call's task as fallback for global (required by Bland API)
+    const globalTask = callObjects.length > 0 ? callObjects[0].task : buildPromptFromRow(queued[0]);
+    
+    const batchPayload = {
+      call_objects: callObjects,
+      global: {
+        task: globalTask, // Required fallback by Bland API
+        voice: DEFAULT_VOICE_ID,
+        webhook: process.env.PUBLIC_WEBHOOK_URL,
+        record: true,
+        wait_for_greeting: false,
+        answered_by_enabled: true,
+        voicemail_action: "hangup",
+        interruption_threshold: 500,
+        model: "base"
+      }
+    };
+
+    const blandResp = await fetch("https://api.bland.ai/v2/batches/create", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `${process.env.BLAND_API_KEY}`, // No Bearer prefix? Docs say: "authorization: <key>"
+      },
+      body: JSON.stringify(batchPayload),
+    });
+
+    if (!blandResp.ok) {
+      const txt = await blandResp.text();
+      throw new Error(`Bland Batch API failed: ${blandResp.status} ${txt}`);
+    }
+
+    const blandResult = await blandResp.json();
+    console.log("Bland Batch created:", blandResult);
+
+    // 2. Update Sheets in Batch
+    console.log("Updating Sheet statuses...");
+    await updateRowsBatch(sheetUpdates);
+
+    // 3. We rely on Webhooks to sync back call_id and Supabase record
+
+    return res.json({
+      ok: true,
+      processed: queued.length,
+      batch_id: blandResult.data?.batch_id,
+      message: `Started batch of ${queued.length} calls`
+    });
+
   } catch (err) {
     console.error("run-dialer failed:", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -994,6 +1320,30 @@ app.post("/webhooks/bland", async (req, res) => {
     console.error("Webhook error:", err);
     return res.status(400).json({ ok: false, error: String(err.message || err) });
   }
+});
+
+// Serve static files AFTER all API routes
+app.use(express.static("public"));
+
+// -------------------- Error Handling Middleware --------------------
+// Handle multer and other errors - must be after all routes
+app.use((err, req, res, next) => {
+  console.error("Error middleware caught:", err);
+  // Check if it's a multer error (MulterError has a code property)
+  if (err && err.code && err.code.startsWith('LIMIT_')) {
+    console.error("Multer error:", err);
+    return res.status(400).json({ ok: false, error: `File upload error: ${err.message}` });
+  }
+  if (err) {
+    console.error("Unhandled error:", err);
+    // Only return JSON for API routes (especially upload-csv)
+    if (req.path === '/upload-csv' || req.path.startsWith('/api/') || req.headers['content-type']?.includes('application/json')) {
+      return res.status(500).json({ ok: false, error: String(err.message || err) });
+    }
+    // For other routes, let Express handle it
+    return next(err);
+  }
+  next();
 });
 
 // -------------------- Start server --------------------

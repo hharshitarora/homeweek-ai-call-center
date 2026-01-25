@@ -3,10 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="api-base-url" content="https://homeweek-ai-call-center-production.up.railway.app">
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="shortcut icon" type="image/png" href="favicon.png">
-  <title>Homeseek</title>
+  <title>Homeseek Command Center</title>
   <style>
     :root {
       --bg: #ffffff;
@@ -22,239 +21,86 @@
       --red: #ff3b30;
       --purple: #af52de;
       --radius: 12px;
+      --radius-sm: 8px;
       --radius-lg: 18px;
       --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
       --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-      --shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
       --transition: 0.3s cubic-bezier(0.25, 0.1, 0.25, 1);
+      --font-stack: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+      font-family: var(--font-stack);
       background: var(--bg-secondary);
       color: var(--text-primary);
-      line-height: 1.47059;
-      letter-spacing: -0.022em;
+      line-height: 1.5;
       -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
+      height: 100vh;
+      overflow: hidden; /* App-like feel */
     }
 
-    /* App Shell */
+    /* --- Layout --- */
     .app {
-      min-height: 100vh;
       display: flex;
       flex-direction: column;
+      height: 100%;
     }
 
-    /* Navigation Bar */
+    /* --- Navbar --- */
     .navbar {
-      background: rgba(255, 255, 255, 0.72);
+      background: rgba(255, 255, 255, 0.8);
       backdrop-filter: saturate(180%) blur(20px);
       -webkit-backdrop-filter: saturate(180%) blur(20px);
-      border-bottom: 0.5px solid var(--separator);
+      border-bottom: 1px solid var(--separator);
       padding: 12px 24px;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-    }
-
-    .navbar-content {
-      max-width: 1200px;
-      margin: 0 auto;
       display: flex;
       justify-content: space-between;
       align-items: center;
-    }
-
-    .navbar h1 {
-      font-size: 21px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
+      flex-shrink: 0;
+      z-index: 20;
     }
 
     .navbar-logo {
-      height: 144px;
+      height: 32px;
       width: auto;
       object-fit: contain;
-      max-width: 250px;
     }
+    
+    .navbar-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-left: 12px;
+    }
+
+    .navbar-left { display: flex; align-items: center; }
 
     .navbar-actions {
       display: flex;
-      gap: 12px;
-      align-items: center;
-    }
-
-    .record-count {
-      font-size: 15px;
-      color: var(--text-secondary);
-      font-weight: 400;
-    }
-
-    /* Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 8px 16px;
-      border-radius: 980px;
-      font-size: 15px;
-      font-weight: 400;
-      border: none;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      text-decoration: none;
-    }
-
-    .btn-primary {
-      background: var(--blue);
-      color: white;
-    }
-    .btn-primary:hover { filter: brightness(1.1); }
-    .btn-primary:active { transform: scale(0.98); }
-
-    .btn-secondary {
-      background: rgba(0, 122, 255, 0.1);
-      color: var(--blue);
-    }
-    .btn-secondary:hover { background: rgba(0, 122, 255, 0.15); }
-
-    .btn-tertiary {
-      background: transparent;
-      color: var(--blue);
-      padding: 8px 12px;
-    }
-    .btn-tertiary:hover { background: rgba(0, 0, 0, 0.04); }
-
-    .btn-destructive {
-      background: transparent;
-      color: var(--red);
-    }
-    .btn-destructive:hover {
-      background: rgba(255, 59, 48, 0.1);
-    }
-
-    .btn-call {
-      background: var(--green);
-      color: white;
-      width: 100%;
-    }
-    .btn-call:hover { filter: brightness(1.05); }
-    .btn-call:disabled {
-      background: var(--bg-secondary);
-      color: var(--text-tertiary);
-      cursor: default;
-    }
-
-    .btn-view {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
-      width: 100%;
-    }
-    .btn-view:hover { background: #e5e5ea; }
-
-    /* Main Content */
-    .main {
-      flex: 1;
-      padding: 24px;
-    }
-
-    .content {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    /* View Container for Transitions */
-    .view-container {
-      position: relative;
-    }
-
-    .view {
-      transition: opacity var(--transition), transform var(--transition);
-    }
-
-    .view.hidden {
-      display: none;
-    }
-
-    /* Grid Layout */
-    .grid-view {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 24px;
-    }
-
-    /* Vertical Card Tile */
-    .card {
-      background: var(--bg);
-      border-radius: var(--radius-lg);
-      padding: 20px;
-      box-shadow: var(--shadow-sm);
-      transition: all 0.2s ease;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      border: 1px solid transparent;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .card:hover {
-      transform: translateY(-2px);
-      box-shadow: var(--shadow-hover);
-    }
-
-    .card:active {
-      transform: scale(0.99);
-    }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 12px;
-    }
-
-    .card-title-group {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .card-title {
-      font-size: 17px;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 2px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .card-subtitle {
-      font-size: 13px;
-      color: var(--text-secondary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .card-body {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
       gap: 10px;
+      align-items: center;
     }
 
-    .info-row {
+    /* --- Stats Bar --- */
+    .stats-bar {
+      background: var(--bg);
+      border-bottom: 1px solid var(--separator);
+      padding: 12px 24px;
+      display: flex;
+      gap: 32px;
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .stat-item {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      min-width: 100px;
     }
 
-    .info-label {
+    .stat-label {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
@@ -262,471 +108,807 @@
       font-weight: 600;
     }
 
-    .info-value {
-      font-size: 14px;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .info-value.notes {
-      white-space: normal;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      color: var(--text-secondary);
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
-    .card-footer {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: auto;
-      padding-top: 16px;
-      border-top: 0.5px solid var(--separator);
-    }
-
-    /* Status Pill */
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 4px 10px;
-      border-radius: 980px;
-      font-size: 12px;
+    .stat-value {
+      font-size: 20px;
       font-weight: 600;
-      text-transform: capitalize;
+      color: var(--text-primary);
+    }
+    
+    .stat-value.highlight { color: var(--blue); }
+
+    /* --- Command Bar (Filters) --- */
+    .command-bar {
+      padding: 16px 24px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: var(--bg-secondary);
       flex-shrink: 0;
     }
 
-    .status-dot {
+    .search-input {
+      flex: 1;
+      min-width: 200px;
+      max-width: 400px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.1);
+      background: var(--bg);
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    .search-input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+    }
+
+    .filter-select {
+      padding: 8px 32px 8px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.1);
+      background: var(--bg);
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--text-primary);
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%2386868b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+    }
+
+    /* --- Main Content Area --- */
+    .main-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+    }
+
+    /* --- Data Table --- */
+    .table-container {
+      flex: 1;
+      overflow: auto;
+      padding: 0 24px 24px;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 13px;
+    }
+
+    .data-table th {
+      position: sticky;
+      top: 0;
+      background: var(--bg-secondary);
+      backdrop-filter: blur(10px);
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--separator);
+      z-index: 10;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .data-table th:hover { color: var(--text-primary); }
+
+    .data-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--separator);
+      background: var(--bg);
+      vertical-align: middle;
+      color: var(--text-primary);
+    }
+
+    .data-table tr:hover td {
+      background: #f0f0f5;
+      cursor: pointer;
+    }
+
+    .data-table tr.selected td {
+      background: rgba(0, 122, 255, 0.1);
+    }
+
+    .data-table tr.row-selected td {
+      background: rgba(255, 59, 48, 0.05);
+    }
+
+    .row-checkbox {
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+    }
+
+    .data-table tr.row-selected td {
+      background: rgba(255, 59, 48, 0.05);
+    }
+
+    .row-checkbox {
+      cursor: pointer;
+      width: 18px;
+      height: 18px;
+    }
+
+    .col-name { font-weight: 500; min-width: 140px; }
+    .col-phone { font-family: 'SF Mono', SFMono-Regular, ui-monospace, monospace; color: var(--text-secondary); }
+    .col-status { width: 120px; }
+    .col-outcome { width: 140px; }
+    .col-date { white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+    .col-notes { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+    .col-actions { width: 80px; text-align: right; }
+
+    /* --- Status Badges --- */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .badge-dot {
       width: 6px;
       height: 6px;
       border-radius: 50%;
+      margin-right: 6px;
     }
 
-    .status-queued { background: #fff3cd; color: #856404; }
-    .status-queued .status-dot { background: #ffc107; }
+    .status-queued { background: #fff8e1; color: #b78a05; }
+    .status-queued .badge-dot { background: #ffc107; }
     
-    .status-calling { background: #cce5ff; color: #004085; }
-    .status-calling .status-dot { background: #007bff; }
+    .status-calling { background: #e3f2fd; color: #1565c0; }
+    .status-calling .badge-dot { background: #2196f3; }
     
-    .status-completed { background: #d4edda; color: #155724; }
-    .status-completed .status-dot { background: var(--green); }
+    .status-completed { background: #e8f5e9; color: #2e7d32; }
+    .status-completed .badge-dot { background: #4caf50; }
     
-    .status-failed { background: #f8d7da; color: #721c24; }
-    .status-failed .status-dot { background: var(--red); }
+    .status-failed { background: #ffebee; color: #c62828; }
+    .status-failed .badge-dot { background: #f44336; }
     
-    .status-no_answer { background: #ffe5d0; color: #8a4500; }
-    .status-no_answer .status-dot { background: var(--orange); }
+    .status-no_answer { background: #fff3e0; color: #e65100; }
+    .status-no_answer .badge-dot { background: var(--orange); }
     
-    .status-voicemail { background: #e8daef; color: #6c3483; }
-    .status-voicemail .status-dot { background: var(--purple); }
+    .status-voicemail { background: #f3e5f5; color: #6a1b9a; }
+    .status-voicemail .badge-dot { background: var(--purple); }
+    
+    .status-opt_out { background: #f5f5f5; color: #616161; }
+    .status-opt_out .badge-dot { background: #9e9e9e; }
 
-    .status-opt_out { background: #e5e5ea; color: #636366; }
-    .status-opt_out .status-dot { background: #8e8e93; }
+    .outcome-interested { color: var(--green); background: rgba(52, 199, 89, 0.1); }
+    .outcome-voicemail { color: var(--purple); background: rgba(175, 82, 222, 0.1); }
+    .outcome-no_answer { color: var(--orange); background: rgba(255, 149, 0, 0.1); }
+    .outcome-opt_out { color: var(--text-tertiary); background: rgba(0,0,0,0.05); text-decoration: line-through; }
+    .outcome-human_followup { color: var(--blue); background: rgba(0, 122, 255, 0.1); }
 
-    /* Detail View (Center Modal Style) */
-    .detail-container {
-      max-width: 640px;
-      margin: 0 auto;
+    /* --- Drawer (Slide-out) --- */
+    .drawer-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.2);
+      backdrop-filter: blur(2px);
+      z-index: 30;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
     }
+    .drawer-overlay.open { opacity: 1; pointer-events: auto; }
 
-    .detail-view {
+    .drawer {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: 500px;
       background: var(--bg);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      box-shadow: var(--shadow-sm);
+      box-shadow: var(--shadow-lg);
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--separator);
     }
+    .drawer.open { transform: translateX(0); }
 
-    .detail-header {
-      padding: 24px;
-      border-bottom: 0.5px solid var(--separator);
+    .drawer-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--separator);
       display: flex;
       justify-content: space-between;
       align-items: center;
+      background: rgba(255,255,255,0.9);
+      backdrop-filter: blur(10px);
     }
 
-    .detail-title {
-      font-size: 22px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
-    }
+    .drawer-title { font-size: 18px; font-weight: 600; }
+    .drawer-subtitle { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
 
-    .detail-body {
-      padding: 0;
-    }
-
-    /* Field Groups (iOS Settings Style) */
-    .field-group {
-      padding: 20px 24px 8px;
-    }
-
-    .field-group-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.02em;
-      margin-bottom: 8px;
-      padding-left: 4px;
-    }
-
-    .field-list {
-      background: var(--bg-tertiary);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-
-    .field-row {
-      display: flex;
-      align-items: center;
-      padding: 12px 16px;
-      min-height: 44px;
-      border-bottom: 0.5px solid var(--separator);
-    }
-
-    .field-row:last-child {
-      border-bottom: none;
-    }
-
-    .field-label {
-      font-size: 16px;
-      color: var(--text-primary);
-      width: 140px;
-      flex-shrink: 0;
-    }
-
-    .field-value {
-      flex: 1;
-      font-size: 16px;
-      color: var(--text-secondary);
-      text-align: right;
-    }
-
-    .field-value.editable {
-      color: var(--text-primary);
-    }
-
-    /* Editable Fields */
-    .field-input {
-      width: 100%;
+    .drawer-close {
+      background: none;
       border: none;
-      background: transparent;
-      font-size: 16px;
-      font-family: inherit;
-      color: var(--text-primary);
-      text-align: right;
-      outline: none;
-      padding: 0;
-    }
-
-    .field-input::placeholder {
-      color: var(--text-tertiary);
-    }
-
-    select.field-input {
       cursor: pointer;
-      appearance: none;
-      -webkit-appearance: none;
-      -moz-appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L6 6L11 1' stroke='%2386868b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right center;
-      padding-right: 20px;
+      padding: 8px;
+      color: var(--text-secondary);
+      border-radius: 50%;
     }
+    .drawer-close:hover { background: rgba(0,0,0,0.05); color: var(--text-primary); }
 
-    .field-textarea {
-      width: 100%;
-      border: none;
-      background: transparent;
-      font-size: 16px;
-      font-family: inherit;
-      color: var(--text-primary);
-      outline: none;
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
       padding: 0;
-      resize: none;
-      min-height: 80px;
-      text-align: left;
-      line-height: 1.5;
     }
 
-    .field-row.textarea-row {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 8px;
-      padding: 16px;
-    }
-
-    .field-row.textarea-row .field-label {
-      width: auto;
-      font-weight: 500;
-    }
-
-    .field-row.textarea-row .field-value,
-    .field-row.textarea-row .field-textarea {
-      width: 100%;
-      text-align: left;
-    }
-
-    /* Detail Footer */
-    .detail-footer {
-      padding: 24px;
+    .drawer-footer {
+      padding: 16px 24px;
+      border-top: 1px solid var(--separator);
+      background: var(--bg-tertiary);
       display: flex;
       justify-content: flex-end;
       gap: 12px;
-      background: var(--bg-secondary);
-      border-top: 0.5px solid var(--separator);
     }
 
-    /* Empty State */
-    .empty-state {
-      text-align: center;
-      padding: 80px 24px;
-      color: var(--text-secondary);
-      grid-column: 1 / -1;
-    }
-
-    .empty-state h2 {
-      font-size: 22px;
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 8px;
-    }
-
-    /* Toast Notification */
-    .toast {
-      position: fixed;
-      bottom: 32px;
-      left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background: rgba(29, 29, 31, 0.9);
-      backdrop-filter: blur(10px);
-      color: white;
-      padding: 12px 24px;
-      border-radius: 980px;
-      font-size: 15px;
-      font-weight: 500;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-      opacity: 0;
-      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-      z-index: 1000;
-    }
-
-    .toast.visible {
-      transform: translateX(-50%) translateY(0);
-      opacity: 1;
-    }
-
-    .toast.error {
-      background: rgba(255, 59, 48, 0.9);
-    }
-
-    /* Back Button */
-    .back-btn {
+    /* --- Buttons --- */
+    .btn {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
-      color: var(--blue);
-      font-size: 16px;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
       font-weight: 500;
+      border: 1px solid transparent;
       cursor: pointer;
-      padding: 12px 0;
-      margin-bottom: 8px;
-      background: none;
-      border: none;
+      transition: all 0.2s;
+      text-decoration: none;
     }
+    
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
 
-    .back-btn:hover { opacity: 0.8; }
+    .btn-primary { background: var(--blue); color: white; border-color: transparent; }
+    .btn-primary:hover { filter: brightness(1.1); }
+    
+    .btn-secondary { background: white; color: var(--text-primary); border-color: var(--separator); }
+    .btn-secondary:hover { background: #f9f9f9; border-color: #d1d1d6; }
+    
+    .btn-tertiary { background: transparent; color: var(--text-primary); border-color: transparent; }
+    .btn-tertiary:hover { background: var(--bg-secondary); }
 
-    /* Loading */
-    .loading {
-      text-align: center;
-      padding: 60px;
-      color: var(--text-secondary);
-      font-size: 17px;
-      grid-column: 1 / -1;
+    .btn-call { background: var(--green); color: white; }
+    .btn-call:hover { filter: brightness(1.05); }
+    .btn-call:disabled { background: var(--bg-secondary); color: var(--text-tertiary); cursor: not-allowed; }
+
+    .btn-destructive { color: var(--red); background: rgba(255, 59, 48, 0.1); }
+    .btn-destructive:hover { background: rgba(255, 59, 48, 0.15); }
+
+    /* --- Form Styles (reused/adapted) --- */
+    .form-section { padding: 20px 24px 0; }
+    .form-section-title {
+      font-size: 11px; font-weight: 700; color: var(--text-secondary);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px;
     }
-
-    /* Responsive */
-    @media (max-width: 600px) {
-      .navbar { padding: 12px 16px; }
-      .main { padding: 16px; }
-      .grid-view { grid-template-columns: 1fr; gap: 16px; }
-      .detail-header { padding: 16px; }
-      .field-group { padding: 16px 16px 4px; }
+    
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-primary); }
+    .form-input, .form-textarea, .form-select {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid var(--separator);
+      background: white;
+      font-family: inherit;
+      font-size: 14px;
+      color: var(--text-primary);
     }
+    .form-input:focus, .form-textarea:focus, .form-select:focus {
+      outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+    }
+    .form-textarea { min-height: 80px; resize: vertical; }
+
+    /* --- Loading/Empty --- */
+    .loading-container { display: flex; align-items: center; justify-content: center; height: 200px; color: var(--text-secondary); }
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px);
+      background: #333; color: white; padding: 10px 20px; border-radius: 50px;
+      font-size: 14px; font-weight: 500; opacity: 0; transition: 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1000; box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    }
+    .toast.visible { transform: translateX(-50%) translateY(0); opacity: 1; }
+    .toast.error { background: var(--red); }
   </style>
 </head>
 <body>
   <div class="app">
+    <!-- Navbar -->
     <nav class="navbar">
-      <div class="navbar-content">
+      <div class="navbar-left">
         <img src="Homeseek logo.jpg" alt="Homeseek" class="navbar-logo">
-        <div class="navbar-actions">
-          <span id="recordCount" class="record-count"></span>
-          <button class="btn btn-secondary" onclick="loadData()">Refresh</button>
-          <button class="btn btn-primary" onclick="openAddView()">Add Lead</button>
+        <span class="navbar-title">Command Center</span>
+      </div>
+      <div class="navbar-actions">
+        <input type="file" id="csvFileInput" accept=".csv" style="display: none;" onchange="handleCsvUpload(event)">
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('csvFileInput').click()">Import CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadData()">Refresh</button>
+        <div style="position:relative; display:inline-block;">
+          <button class="btn btn-secondary btn-sm" onclick="toggleBulkMenu()">⚡ Bulk Actions</button>
+          <div id="bulkMenu" style="display:none; position:absolute; right:0; top:100%; background:white; border:1px solid var(--separator); border-radius:8px; box-shadow:var(--shadow-md); padding:4px; min-width:140px; z-index:100; margin-top:4px;">
+            <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(5)">Call 5 Leads</button>
+            <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(25)">Call 25 Leads</button>
+            <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(50)">Call 50 Leads</button>
+          </div>
         </div>
+        <button class="btn btn-primary btn-sm" onclick="openAddDrawer()">+ New Lead</button>
       </div>
     </nav>
 
-    <main class="main">
-      <div class="content">
-        <div class="view-container">
-          <!-- Grid View -->
-          <div id="listView" class="view grid-view">
-            <div class="loading">Loading leads...</div>
-          </div>
-
-          <!-- Detail View -->
-          <div id="detailView" class="view hidden detail-container"></div>
-        </div>
+    <!-- Stats Bar -->
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-item">
+        <span class="stat-label">Total Leads</span>
+        <span class="stat-value" id="statTotal">0</span>
       </div>
-    </main>
+      <div class="stat-item">
+        <span class="stat-label">Interested</span>
+        <span class="stat-value highlight" id="statInterested">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Follow Up</span>
+        <span class="stat-value" id="statFollowUp">0</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Completion</span>
+        <span class="stat-value" id="statCompletion">0%</span>
+      </div>
+    </div>
+
+    <!-- Command Bar -->
+    <div class="command-bar">
+      <input type="text" id="searchInput" class="search-input" placeholder="Search name or phone..." oninput="handleFilterChange()">
+      
+      <select id="statusFilter" class="filter-select" onchange="handleFilterChange()">
+        <option value="">All Statuses</option>
+        <option value="queued">Queued</option>
+        <option value="calling">Calling</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+      </select>
+
+      <select id="outcomeFilter" class="filter-select" onchange="handleFilterChange()">
+        <option value="">All Outcomes</option>
+        <option value="interested">Interested</option>
+        <option value="human_followup">Follow Up</option>
+        <option value="voicemail">Voicemail</option>
+        <option value="no_answer">No Answer</option>
+        <option value="opt_out">Opt Out</option>
+      </select>
+
+      <button id="bulkDeleteBtn" class="btn btn-destructive btn-sm" onclick="handleBulkDelete()" style="display:none;">
+        Delete Selected (<span id="selectedCount">0</span>)
+      </button>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <div class="table-container">
+        <table class="data-table" id="dataTable">
+          <thead>
+            <tr>
+              <th style="width:40px;">
+                <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(event)">
+              </th>
+              <th onclick="handleSort('lead_name')">Name</th>
+              <th onclick="handleSort('phone_e164')">Phone</th>
+              <th onclick="handleSort('call_status')">Status</th>
+              <th onclick="handleSort('outcome')">Outcome</th>
+              <th onclick="handleSort('last_call_at')">Last Call</th>
+              <th>Notes</th>
+              <th></th> <!-- Actions -->
+            </tr>
+          </thead>
+          <tbody id="tableBody">
+            <!-- Rows injected by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Drawer Overlay -->
+      <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+
+      <!-- Drawer -->
+      <div class="drawer" id="drawer">
+        <!-- Injected by JS -->
+      </div>
+    </div>
 
     <div id="toast" class="toast"></div>
   </div>
 
   <script>
-    // API Configuration - can be overridden via window.API_BASE_URL or meta tag
-    const API_BASE_URL = window.API_BASE_URL || 
-      (document.querySelector('meta[name="api-base-url"]')?.content) || 
-      '';
-    
-    // State
-    let records = [];
-    let headers = [];
-    let currentRecord = null;
+    // --- Configuration ---
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const PRODUCTION_API = 'https://homeweek-ai-call-center-production.up.railway.app';
+    const API_BASE_URL = window.API_BASE_URL || (isLocalhost ? '' : PRODUCTION_API);
+
+    // --- State ---
+    let allRecords = [];
+    let filteredRecords = [];
+    let currentSort = { field: 'created_at', dir: 'desc' };
+    let currentFilter = { text: '', status: '', outcome: '' };
+    let selectedRecordId = null; // Use rowNumber as ID
+    let selectedRows = new Set(); // For bulk selection
     let isEditing = false;
     let isAdding = false;
 
-    // Config
-    const REQUIRED = ['phone_e164', 'property_address'];
-    const HIDDEN_ADD = ['lead_id', 'property_id', 'call_status', 'call_attempts', 'bland_call_id', 
-                        'last_call_at', 'recording_url', 'transcript', 'notes', 'outcome', 'next_action', 'created_at'];
-    const READONLY = ['lead_id', 'property_id', 'bland_call_id', 'created_at'];
-    const TEXTAREA_FIELDS = ['notes', 'transcript', 'property_highlights'];
-    
-    const LABELS = {
-      'phone_e164': 'Phone',
-      'lead_name': 'Lead Name',
-      'property_name': 'Property Name',
-      'property_address': 'Address',
-      'property_beds_baths': 'Beds/Baths',
-      'property_price_inr': 'Price',
-      'property_highlights': 'Highlights',
-      'property_url': 'Listing URL',
-      'showing_windows': 'Showings',
-      'voice_id': 'Voice',
-      'call_status': 'Status',
-      'call_attempts': 'Attempts',
-      'last_call_at': 'Last Call',
-      'outcome': 'Outcome',
-      'next_action': 'Next Action',
-      'notes': 'Notes',
-      'team_feedback': 'Team Feedback',
-      'feedback_notes': 'Feedback Notes',
-      'created_at': 'Created',
-      'lead_id': 'Lead ID',
-      'property_id': 'Property ID',
-      'bland_call_id': 'Call ID',
-      'recording_url': 'Recording',
-      'transcript': 'Transcript'
+    // --- Formatters ---
+    const formatDate = (isoString) => {
+      if (!isoString) return '—';
+      const d = new Date(isoString);
+      return d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     };
 
-    // Map values to display names
-    const OUTCOME_DISPLAY = {
-      'no_answer': 'No Answer / Not Picked',
-      'voicemail': 'Voicemail',
-      'opt_out': 'Opted Out',
+    const formatPhone = (phone) => {
+      if (!phone) return '';
+      // Simple formatter for +91
+      return phone.replace('+91', '+91 ');
+    };
+
+    const OUTCOME_LABELS = {
       'interested': 'Interested',
-      'human_followup': 'Needs Follow-up'
+      'human_followup': 'Follow Up',
+      'voicemail': 'Voicemail',
+      'no_answer': 'No Answer',
+      'opt_out': 'Opt Out',
+      'none': 'None'
     };
 
-    const NEXT_ACTION_DISPLAY = {
-      'call_back_later': 'Schedule Follow-up Call',
-      'human_followup': 'Human Agent Follow-up',
-      'none': 'No Action Needed'
-    };
+    // --- Core Logic ---
 
-    const FIELD_GROUPS = {
-      'Contact': ['phone_e164', 'lead_name'],
-      'Property': ['property_name', 'property_address', 'property_beds_baths', 'property_price_inr', 'property_highlights', 'property_url', 'showing_windows'],
-      'Call': ['call_status', 'call_attempts', 'last_call_at', 'outcome', 'next_action', 'voice_id'],
-      'Feedback': ['team_feedback', 'feedback_notes'],
-      'Notes': ['notes'],
-      'System': ['lead_id', 'property_id', 'bland_call_id', 'created_at', 'recording_url', 'transcript']
-    };
-
-    // Helpers
-    const label = (h) => LABELS[h] || h.replace(/_/g, ' ');
-    const escape = (t) => { 
-      if (!t) return ''; 
-      const d = document.createElement('div'); 
-      d.textContent = t; 
-      return d.innerHTML; 
-    };
-
-    function toast(msg, isError = false) {
-      const el = document.getElementById('toast');
-      el.textContent = msg;
-      el.className = 'toast' + (isError ? ' error' : '');
-      el.classList.add('visible');
-      setTimeout(() => el.classList.remove('visible'), 3000);
-    }
-
-    // API
     async function loadData() {
       try {
         const res = await fetch(`${API_BASE_URL}/rows`);
         const data = await res.json();
+        
         if (!data.ok) throw new Error(data.error);
         
-        headers = data.headers || [];
-        records = data.rows || [];
-        
-        document.getElementById('recordCount').textContent = `${records.length} leads`;
-        renderList();
+        allRecords = data.rows || [];
+        updateStats();
+        applyFilters(); // This triggers render
       } catch (e) {
-        toast('Failed to load data', true);
-        document.getElementById('listView').innerHTML = `
-          <div class="empty-state">
-            <h2>Unable to Load</h2>
-            <p>Check your connection and try again.</p>
-            <button class="btn btn-primary" onclick="loadData()">Retry</button>
-          </div>
-        `;
+        showToast('Failed to load data', true);
+        console.error(e);
       }
     }
 
-    async function saveRecord(data, rowNumber = null) {
-      try {
-        const isNew = !rowNumber;
-        const endpoint = isNew ? '/add-row' : '/update-row';
-        const method = isNew ? 'POST' : 'PUT';
-        const payload = isNew ? { data } : { sheet_row: rowNumber, data };
+    function updateStats() {
+      const total = allRecords.length;
+      const interested = allRecords.filter(r => r.outcome === 'interested').length;
+      const followup = allRecords.filter(r => r.outcome === 'human_followup').length;
+      
+      const completed = allRecords.filter(r => r.call_status === 'completed' || r.call_status === 'failed').length;
+      const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
+      document.getElementById('statTotal').textContent = total;
+      document.getElementById('statInterested').textContent = interested;
+      document.getElementById('statFollowUp').textContent = followup;
+      document.getElementById('statCompletion').textContent = `${rate}%`;
+    }
+
+    function handleFilterChange() {
+      currentFilter.text = document.getElementById('searchInput').value.toLowerCase();
+      currentFilter.status = document.getElementById('statusFilter').value;
+      currentFilter.outcome = document.getElementById('outcomeFilter').value;
+      applyFilters();
+    }
+
+    function applyFilters() {
+      filteredRecords = allRecords.filter(r => {
+        // Text Search
+        const textMatch = 
+          (r.lead_name && r.lead_name.toLowerCase().includes(currentFilter.text)) ||
+          (r.phone_e164 && r.phone_e164.includes(currentFilter.text));
+        
+        // Status Filter
+        const statusMatch = !currentFilter.status || r.call_status === currentFilter.status;
+
+        // Outcome Filter
+        const outcomeMatch = !currentFilter.outcome || r.outcome === currentFilter.outcome;
+
+        return textMatch && statusMatch && outcomeMatch;
+      });
+
+      sortRecords();
+    }
+
+    function handleSort(field) {
+      if (currentSort.field === field) {
+        currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort.field = field;
+        currentSort.dir = 'asc'; // Default to asc for new field
+        if (field === 'created_at' || field === 'last_call_at') currentSort.dir = 'desc';
+      }
+      sortRecords();
+    }
+
+    function sortRecords() {
+      const { field, dir } = currentSort;
+      
+      filteredRecords.sort((a, b) => {
+        let va = a[field] || '';
+        let vb = b[field] || '';
+        
+        // Handle numbers/dates if needed, simplistic string compare for now
+        if (va < vb) return dir === 'asc' ? -1 : 1;
+        if (va > vb) return dir === 'asc' ? 1 : -1;
+        return 0;
+      });
+
+      renderTable();
+    }
+
+    // --- Rendering ---
+
+    function renderTable() {
+      const tbody = document.getElementById('tableBody');
+      
+      if (filteredRecords.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state">No leads found matching your filters.</div></td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filteredRecords.map(r => {
+        const rowNum = r.__rowNumber;
+        const status = r.call_status || 'queued';
+        const outcome = r.outcome || '';
+        const outcomeLabel = OUTCOME_LABELS[outcome] || outcome || '—';
+        const isSelected = selectedRecordId === rowNum;
+
+        // Status badge
+        const statusBadge = `<span class="badge status-${status}"><span class="badge-dot"></span>${status}</span>`;
+        
+        // Outcome badge
+        const outcomeBadge = outcome ? `<span class="badge outcome-${outcome}">${outcomeLabel}</span>` : '—';
+
+        const isRowSelected = selectedRows.has(rowNum);
+        
+        return `
+          <tr class="${isSelected ? 'selected' : ''} ${isRowSelected ? 'row-selected' : ''}" onclick="openDrawer(${rowNum})">
+            <td onclick="event.stopPropagation();">
+              <input type="checkbox" class="row-checkbox" data-row="${rowNum}" ${isRowSelected ? 'checked' : ''} onchange="toggleRowSelection(${rowNum}, event)">
+            </td>
+            <td class="col-name">
+              <div style="font-weight:600">${r.lead_name || 'Untitled'}</div>
+            </td>
+            <td class="col-phone">${formatPhone(r.phone_e164)}</td>
+            <td class="col-status">${statusBadge}</td>
+            <td class="col-outcome">${outcomeBadge}</td>
+            <td class="col-date">${formatDate(r.last_call_at)}</td>
+            <td class="col-notes">${r.notes || r.summary || ''}</td>
+            <td class="col-actions">
+              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); openDrawer(${rowNum})">View</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      
+      // Update bulk selection UI after rendering
+      updateBulkDeleteButton();
+      updateSelectAllCheckbox();
+    }
+
+    function renderDrawer(record, editing = false, adding = false) {
+      const container = document.getElementById('drawer');
+      
+      const title = adding ? 'Add New Lead' : (record.lead_name || record.phone_e164);
+      const subtitle = adding ? 'Enter lead details' : (record.phone_e164 || 'No phone number');
+      
+      const canCall = !adding && record.phone_e164?.startsWith('+') && record.call_status !== 'calling';
+
+      // Define fields to render
+      const fields = [
+        { key: 'lead_name', label: 'Name', type: 'text' },
+        { key: 'phone_e164', label: 'Phone (+91...)', type: 'text', required: true },
+        { key: 'property_address', label: 'Property Address', type: 'text' },
+        { key: 'property_price_inr', label: 'Price Estimate', type: 'text' },
+        { key: 'notes', label: 'Notes', type: 'textarea' },
+        { key: 'outcome', label: 'Outcome', type: 'select', options: OUTCOME_LABELS, readonly: !editing }, 
+        { key: 'call_status', label: 'Status', type: 'select', options: {'queued':'Queued', 'calling':'Calling', 'completed':'Completed'}, readonly: !editing }
+      ];
+
+      // Form Generator
+      const generateField = (f) => {
+        const val = adding ? '' : (record[f.key] || '');
+        const isReadonly = f.readonly || (!editing && !adding);
+        
+        if (f.type === 'select') {
+          if (isReadonly) return renderStaticField(f.label, f.options[val] || val || '—');
+          
+          // Add empty option first, then other options
+          const opts = `<option value="">— Select —</option>` + 
+            Object.entries(f.options).map(([k, v]) => 
+              `<option value="${k}" ${val === k ? 'selected' : ''}>${v}</option>`
+            ).join('');
+          
+          return `
+            <div class="form-group">
+              <label class="form-label">${f.label}</label>
+              <select name="${f.key}" class="form-select">${opts}</select>
+            </div>
+          `;
+        }
+        
+        if (isReadonly) return renderStaticField(f.label, val || '—');
+
+        if (f.type === 'textarea') {
+          return `
+            <div class="form-group">
+              <label class="form-label">${f.label}</label>
+              <textarea name="${f.key}" class="form-textarea" placeholder="${f.label}">${val}</textarea>
+            </div>
+          `;
+        }
+
+        return `
+          <div class="form-group">
+            <label class="form-label">${f.label} ${f.required ? '*' : ''}</label>
+            <input type="${f.type}" name="${f.key}" class="form-input" value="${val}" placeholder="${f.label}" ${f.required ? 'required' : ''}>
+          </div>
+        `;
+      };
+
+      const renderStaticField = (label, val) => `
+        <div class="form-group">
+          <label class="form-label" style="color:var(--text-secondary); font-size:11px; text-transform:uppercase;">${label}</label>
+          <div style="font-size:14px; color:var(--text-primary);">${val}</div>
+        </div>
+      `;
+
+      // HTML Structure
+      container.innerHTML = `
+        <div class="drawer-header">
+          <div>
+            <div class="drawer-title">${title}</div>
+            <div class="drawer-subtitle">${subtitle}</div>
+          </div>
+          <button class="drawer-close" onclick="closeDrawer()">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <form id="drawerForm" class="drawer-body" onsubmit="handleFormSubmit(event)">
+          <!-- Action Buttons (if view mode) -->
+          ${!editing && !adding ? `
+            <div style="padding: 20px 24px 0; display:flex; gap:10px;">
+              <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber})">
+                ${record.call_status === 'calling' ? 'Calling...' : '📞 Start Call'}
+              </button>
+              <button type="button" class="btn btn-secondary" onclick="openDrawer(${record.__rowNumber}, true)">Edit</button>
+            </div>
+          ` : ''}
+
+          <div class="form-section">
+            <div class="form-section-title">Lead Information</div>
+            ${fields.map(generateField).join('')}
+          </div>
+
+          <!-- Transcript (View Only) -->
+          ${!adding && record.transcript ? `
+            <div class="form-section">
+              <div class="form-section-title">Latest Call Transcript</div>
+              <div style="background:var(--bg-secondary); padding:12px; border-radius:8px; font-size:13px; white-space:pre-wrap; max-height:300px; overflow-y:auto;">${record.transcript}</div>
+            </div>
+          ` : ''}
+
+          ${!adding && !editing ? `
+            <div class="form-section" style="margin-top:20px;">
+               <button type="button" class="btn btn-destructive btn-sm" onclick="handleDelete(${record.__rowNumber})">Delete Lead</button>
+            </div>
+          ` : ''}
+          
+          <div style="height: 40px;"></div>
+        </form>
+
+        ${editing || adding ? `
+          <div class="drawer-footer">
+            <button class="btn btn-secondary" onclick="${adding ? 'closeDrawer()' : `openDrawer(${record.__rowNumber})`}">Cancel</button>
+            <button class="btn btn-primary" onclick="document.getElementById('drawerForm').dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}))">Save Changes</button>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    // --- Actions ---
+
+    function openDrawer(rowNumber, editing = false) {
+      isAdding = false;
+      isEditing = editing;
+      selectedRecordId = rowNumber;
+      
+      const record = allRecords.find(r => r.__rowNumber === rowNumber);
+      if (!record) return;
+
+      renderDrawer(record, editing, false);
+      
+      document.getElementById('drawer').classList.add('open');
+      document.getElementById('drawerOverlay').classList.add('open');
+      
+      // Update table highlight
+      renderTable(); 
+    }
+
+    function openAddDrawer() {
+      isAdding = true;
+      isEditing = true;
+      selectedRecordId = null;
+      
+      renderDrawer({}, true, true);
+      
+      document.getElementById('drawer').classList.add('open');
+      document.getElementById('drawerOverlay').classList.add('open');
+    }
+
+    function closeDrawer() {
+      document.getElementById('drawer').classList.remove('open');
+      document.getElementById('drawerOverlay').classList.remove('open');
+      selectedRecordId = null;
+      renderTable();
+    }
+
+    async function handleFormSubmit(e) {
+      e.preventDefault();
+      
+      const formData = new FormData(e.target);
+      const data = {};
+      formData.forEach((value, key) => {
+        // Only include non-empty values (skip empty strings from select dropdowns)
+        if (value.trim() !== '') {
+          data[key] = value.trim();
+        }
+      });
+
+      // Validation
+      if (!data.phone_e164 || !data.phone_e164.startsWith('+')) {
+        showToast('Phone must start with + (e.g., +91...)', true);
+        return;
+      }
+
+      const rowNumber = isAdding ? null : selectedRecordId;
+      const endpoint = isAdding ? '/add-row' : '/update-row';
+      const method = isAdding ? 'POST' : 'PUT';
+      const payload = isAdding ? { data } : { sheet_row: rowNumber, data };
+
+      try {
         const res = await fetch(`${API_BASE_URL}${endpoint}`, {
           method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         
-        const result = await res.json();
-        if (!result.ok) throw new Error(result.error);
+        const resData = await res.json();
+        if (!resData.ok) throw new Error(resData.error);
         
-        toast(isNew ? 'Lead added' : 'Changes saved');
-        await loadData();
-        showList();
-        return true;
-      } catch (e) {
-        toast(e.message || 'Failed to save', true);
-        return false;
+        showToast(isAdding ? 'Lead Added' : 'Saved Successfully');
+        await loadData(); // Reload data
+        
+        if (isAdding) closeDrawer();
+        else openDrawer(rowNumber, false); // Switch back to view mode
+        
+      } catch (err) {
+        showToast(err.message || 'Failed to save', true);
       }
     }
 
@@ -741,336 +923,211 @@
         const data = await res.json();
         
         if (res.status === 409) {
-          toast('Call already in progress. Please wait for it to complete.', true);
-          await loadData();
-          return;
+          showToast('Call already in progress', true);
+        } else if (!data.ok) {
+          throw new Error(data.error);
+        } else {
+          showToast('Calling...');
         }
         
-        if (!data.ok) throw new Error(data.error);
-        
-        toast('Call started');
         await loadData();
-        
-        // Update current detail view if open
-        if (currentRecord && currentRecord.__rowNumber === rowNumber) {
-          const updated = records.find(r => r.__rowNumber === rowNumber);
-          if (updated) renderDetail(updated, false, false);
-        }
+        // Refresh drawer if open
+        if (selectedRecordId === rowNumber) openDrawer(rowNumber, false);
       } catch (e) {
-        toast(e.message || 'Failed to start call', true);
+        showToast(e.message || 'Call failed', true);
       }
     }
-
-    // Rendering
-    function renderList() {
-      const container = document.getElementById('listView');
-      
-      if (records.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <h2>No Leads Yet</h2>
-            <p>Add your first lead to get started.</p>
-            <button class="btn btn-primary" onclick="openAddView()">Add Lead</button>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = records.map((r, i) => {
-        const status = r.call_status || 'queued';
-        const statusDisplay = status.replace(/_/g, ' ');
-        // Enable call button when status is "queued" or "completed" (for testing/recalling)
-        // Disable only when actively "calling" to prevent duplicates
-        const canCall = status !== 'calling' && r.phone_e164?.startsWith('+');
-        const rowNum = r.__rowNumber;
-        const outcomeDisplay = OUTCOME_DISPLAY[r.outcome] || r.outcome || '—';
-        const nextActionDisplay = NEXT_ACTION_DISPLAY[r.next_action] || r.next_action || '—';
-        
-        const displayName = r.lead_name || r.phone_e164 || 'Untitled';
-        const displaySubtitle = r.lead_name ? r.phone_e164 : `ID: ${r.lead_id || '-'}`;
-        
-        return `
-          <div class="card" onclick="openDetail(${i})">
-            <div class="card-header">
-              <div class="card-title-group">
-                <div class="card-title">${escape(displayName)}</div>
-                <div class="card-subtitle">${escape(displaySubtitle)}</div>
-              </div>
-              <span class="status-pill status-${status}">
-                <span class="status-dot"></span>
-                ${statusDisplay}
-              </span>
-            </div>
-            
-            <div class="card-body">
-              <div class="info-row">
-                <span class="info-label">Address</span>
-                <span class="info-value">${escape(r.property_address || '—')}</span>
-              </div>
-              ${r.property_price_inr ? `
-                <div class="info-row">
-                  <span class="info-label">Price</span>
-                  <span class="info-value">${escape(r.property_price_inr)}</span>
-                </div>
-              ` : ''}
-              ${r.outcome ? `
-                <div class="info-row">
-                  <span class="info-label">Outcome</span>
-                  <span class="info-value">${escape(outcomeDisplay)}</span>
-                </div>
-              ` : ''}
-              ${r.next_action ? `
-                <div class="info-row">
-                  <span class="info-label">Next Action</span>
-                  <span class="info-value">${escape(nextActionDisplay)}</span>
-                </div>
-              ` : ''}
-              ${r.notes ? `
-                <div class="info-row">
-                  <span class="info-label">Notes</span>
-                  <div class="info-value notes">${escape(r.notes)}</div>
-                </div>
-              ` : ''}
-            </div>
-
-            <div class="card-footer">
-              <button class="btn btn-view" onclick="event.stopPropagation(); openDetail(${i})">Details</button>
-              <button 
-                class="btn btn-call" 
-                ${!canCall ? 'disabled' : ''} 
-                onclick="event.stopPropagation(); triggerCall(${rowNum})"
-              >
-                ${status === 'calling' ? 'Calling...' : 'Call'}
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    function renderDetail(record, editing = false, adding = false) {
-      currentRecord = record;
-      isEditing = editing;
-      isAdding = adding;
-
-      const fieldsToShow = adding 
-        ? headers.filter(h => !HIDDEN_ADD.includes(h))
-        : headers;
-
-      // Group fields
-      let groupedHtml = '';
-      
-      for (const [groupName, groupFields] of Object.entries(FIELD_GROUPS)) {
-        const relevantFields = groupFields.filter(f => fieldsToShow.includes(f));
-        if (relevantFields.length === 0) continue;
-        
-        // Skip system group in add mode
-        if (adding && groupName === 'System') continue;
-        
-        // Only show Feedback group when call is completed
-        if (groupName === 'Feedback' && record.call_status !== 'completed') continue;
-
-        const fieldsHtml = relevantFields.map(field => {
-          const value = record[field] || '';
-          const isReadonly = !editing || READONLY.includes(field);
-          const isTextarea = TEXTAREA_FIELDS.includes(field);
-          const isRequired = REQUIRED.includes(field);
-
-          // Special handling for team_feedback dropdown
-          if (field === 'team_feedback') {
-            return `
-              <div class="field-row">
-                <span class="field-label">${label(field)}</span>
-                ${editing && !isReadonly
-                  ? `<select class="field-input" name="${field}" style="text-align:right;">
-                      <option value="">Select feedback</option>
-                      <option value="good" ${value === 'good' ? 'selected' : ''}>✅ Good</option>
-                      <option value="ok" ${value === 'ok' ? 'selected' : ''}>⚠️ OK</option>
-                      <option value="bad" ${value === 'bad' ? 'selected' : ''}>❌ Bad</option>
-                    </select>`
-                  : `<span class="field-value">
-                      ${value === 'good' ? '✅ Good' : value === 'ok' ? '⚠️ OK' : value === 'bad' ? '❌ Bad' : '—'}
-                    </span>`
-                }
-              </div>
-            `;
-          }
-
-          // Special handling for outcome and next_action - use display mappings
-          if (field === 'outcome' && !editing) {
-            const displayValue = OUTCOME_DISPLAY[value] || value || '—';
-            return `
-              <div class="field-row">
-                <span class="field-label">${label(field)}</span>
-                <span class="field-value">${escape(displayValue)}</span>
-              </div>
-            `;
-          }
-
-          if (field === 'next_action' && !editing) {
-            const displayValue = NEXT_ACTION_DISPLAY[value] || value || '—';
-            return `
-              <div class="field-row">
-                <span class="field-label">${label(field)}</span>
-                <span class="field-value">${escape(displayValue)}</span>
-              </div>
-            `;
-          }
-
-          if (isTextarea) {
-            return `
-              <div class="field-row textarea-row">
-                <span class="field-label">${label(field)}${isRequired && editing ? ' *' : ''}</span>
-                ${editing && !isReadonly
-                  ? `<textarea class="field-textarea" name="${field}" placeholder="Enter ${label(field).toLowerCase()}...">${escape(value)}</textarea>`
-                  : `<span class="field-value">${escape(value) || '—'}</span>`
-                }
-              </div>
-            `;
-          }
-
-          return `
-            <div class="field-row">
-              <span class="field-label">${label(field)}${isRequired && editing ? ' *' : ''}</span>
-              ${editing && !isReadonly
-                ? `<input class="field-input" type="text" name="${field}" value="${escape(value)}" placeholder="${label(field)}">`
-                : `<span class="field-value${isReadonly ? '' : ' editable'}">${escape(value) || '—'}</span>`
-              }
-            </div>
-          `;
-        }).join('');
-
-        groupedHtml += `
-          <div class="field-group">
-            <div class="field-group-title">${groupName}</div>
-            <div class="field-list">${fieldsHtml}</div>
-          </div>
-        `;
-      }
-
-      // Enable call button when status is not "calling" (allows recalling for testing)
-      const canCall = record.phone_e164?.startsWith('+') && record.call_status !== 'calling';
-      const rowNum = record.__rowNumber;
-
-      document.getElementById('detailView').innerHTML = `
-        <button class="back-btn" onclick="showList()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-          Back to Leads
-        </button>
-
-        <div class="detail-view">
-          <div class="detail-header">
-            <span class="detail-title">${adding ? 'New Lead' : escape(record.phone_e164 || 'Lead Details')}</span>
-            <div class="detail-actions">
-              ${!adding && !editing ? `
-                <button class="btn btn-call" style="width:auto; padding:8px 24px;" ${!canCall ? 'disabled' : ''} onclick="event.stopPropagation(); triggerCall(${rowNum})">
-                  ${record.call_status === 'calling' ? 'Calling...' : 'Call Lead'}
-                </button>
-              ` : ''}
-            </div>
-          </div>
-
-          <form id="detailForm" class="detail-body" onsubmit="handleSave(event)">
-            ${groupedHtml}
-          </form>
-
-          <div class="detail-footer">
-            ${adding ? `
-              <button class="btn btn-tertiary" type="button" onclick="showList()">Cancel</button>
-              <button class="btn btn-primary" onclick="handleSave(event)">Add Lead</button>
-            ` : editing ? `
-              <button class="btn btn-tertiary" type="button" onclick="openDetail(${records.indexOf(record)})">Cancel</button>
-              <button class="btn btn-primary" onclick="handleSave(event)">Save Changes</button>
-            ` : `
-              <button class="btn btn-secondary" onclick="openDetail(${records.indexOf(record)}, true)">Edit Lead</button>
-              <button class="btn btn-destructive" onclick="handleDelete(${rowNum})">Delete Lead</button>
-            `}
-          </div>
-        </div>
-      `;
-    }
-
-    // Navigation
-    function showList() {
-      currentRecord = null;
-      isEditing = false;
-      isAdding = false;
-      
-      document.getElementById('listView').classList.remove('hidden');
-      document.getElementById('detailView').classList.add('hidden');
-    }
-
-    function openDetail(index, editing = false) {
-      const record = records[index];
-      if (!record) return;
-      
-      document.getElementById('listView').classList.add('hidden');
-      document.getElementById('detailView').classList.remove('hidden');
-      
-      renderDetail(record, editing, false);
-    }
-
-    function openAddView() {
-      document.getElementById('listView').classList.add('hidden');
-      document.getElementById('detailView').classList.remove('hidden');
-      
-      renderDetail({}, true, true);
-    }
-
-    // Form Handling
-    async function handleSave(e) {
-      e.preventDefault();
-      
-      const form = document.getElementById('detailForm');
-      const formData = new FormData(form);
-      const data = {};
-      
-      for (let [k, v] of formData.entries()) {
-        data[k] = v.trim();
-      }
-
-      // Validation
-      if (!data.phone_e164 || !data.phone_e164.startsWith('+')) {
-        toast('Phone number required (format: +1...)', true);
-        return;
-      }
-      if (!data.property_address) {
-        toast('Address is required', true);
-        return;
-      }
-
-      const rowNumber = isAdding ? null : currentRecord.__rowNumber;
-      await saveRecord(data, rowNumber);
-    }
-
+    
     async function handleDelete(rowNumber) {
-      // Confirmation dialog
-      const confirmed = confirm('Are you sure you want to delete this lead? This action cannot be undone.');
-      if (!confirmed) return;
-
+      if(!confirm('Delete this lead?')) return;
       try {
         const res = await fetch(`${API_BASE_URL}/delete-row`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sheet_row: rowNumber })
         });
+        const d = await res.json();
+        if(!d.ok) throw new Error(d.error);
+        
+        showToast('Lead deleted');
+        closeDrawer();
+        loadData();
+      } catch(e) {
+        showToast(e.message, true);
+      }
+    }
+
+    // Reuse existing CSV upload logic (simplified for this view)
+    async function handleCsvUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const formData = new FormData();
+      formData.append('csv', file);
+      
+      try {
+        showToast('Uploading...');
+        const res = await fetch(`${API_BASE_URL}/upload-csv`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if(!data.ok) throw new Error(data.error);
+        
+        showToast(`Imported ${data.inserted} leads`);
+        loadData();
+      } catch(e) {
+        showToast('Upload failed', true);
+      }
+      event.target.value = '';
+    }
+
+    function showToast(msg, isError = false) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast ' + (isError ? 'error' : '');
+      el.classList.add('visible');
+      setTimeout(() => el.classList.remove('visible'), 3000);
+    }
+
+    // --- Bulk Actions ---
+    function toggleBulkMenu() {
+      const el = document.getElementById('bulkMenu');
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+      const menu = document.getElementById('bulkMenu');
+      const btn = document.querySelector('button[onclick="toggleBulkMenu()"]');
+      if (menu && menu.style.display === 'block' && !menu.contains(e.target) && !btn.contains(e.target)) {
+        menu.style.display = 'none';
+      }
+    });
+
+    async function triggerBulkCall(limit) {
+      toggleBulkMenu();
+      if (!confirm(`Are you sure you want to start ${limit} calls? This will trigger calls immediately.`)) return;
+
+      try {
+        showToast(`Starting batch of ${limit} calls...`);
+        
+        const res = await fetch(`${API_BASE_URL}/run-dialer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit })
+        });
+
+        const data = await res.json();
+        
+        if (!data.ok) throw new Error(data.error);
+        
+        showToast(data.message || `Batch started for ${data.processed} leads`);
+        await loadData();
+        
+      } catch (e) {
+        showToast(e.message || 'Batch call failed', true);
+        console.error(e);
+      }
+    }
+
+    // --- Bulk Selection ---
+    function toggleRowSelection(rowNum, event) {
+      if (event) event.stopPropagation();
+      
+      if (selectedRows.has(rowNum)) {
+        selectedRows.delete(rowNum);
+      } else {
+        selectedRows.add(rowNum);
+      }
+      
+      updateBulkDeleteButton();
+      updateSelectAllCheckbox();
+    }
+
+    function toggleSelectAll(event) {
+      if (event) event.stopPropagation();
+      
+      const checkbox = document.getElementById('selectAllCheckbox');
+      const isChecked = checkbox.checked;
+      
+      if (isChecked) {
+        // Select all visible rows
+        filteredRecords.forEach(r => selectedRows.add(r.__rowNumber));
+      } else {
+        // Deselect all
+        selectedRows.clear();
+      }
+      
+      // Update all checkboxes
+      document.querySelectorAll('.row-checkbox').forEach(cb => {
+        cb.checked = isChecked;
+      });
+      
+      updateBulkDeleteButton();
+    }
+
+    function updateSelectAllCheckbox() {
+      const checkbox = document.getElementById('selectAllCheckbox');
+      if (!checkbox) return;
+      
+      const allSelected = filteredRecords.length > 0 && 
+        filteredRecords.every(r => selectedRows.has(r.__rowNumber));
+      const someSelected = filteredRecords.some(r => selectedRows.has(r.__rowNumber));
+      
+      checkbox.checked = allSelected;
+      checkbox.indeterminate = someSelected && !allSelected;
+    }
+
+    function updateBulkDeleteButton() {
+      const btn = document.getElementById('bulkDeleteBtn');
+      const countSpan = document.getElementById('selectedCount');
+      
+      if (selectedRows.size > 0) {
+        btn.style.display = 'inline-flex';
+        countSpan.textContent = selectedRows.size;
+      } else {
+        btn.style.display = 'none';
+      }
+    }
+
+    async function handleBulkDelete() {
+      const count = selectedRows.size;
+      if (count === 0) return;
+      
+      if (!confirm(`Are you sure you want to delete ${count} lead(s)? This action cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const rowNumbers = Array.from(selectedRows);
+        showToast(`Deleting ${count} lead(s)...`);
+        
+        const res = await fetch(`${API_BASE_URL}/delete-rows-bulk`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheet_rows: rowNumbers })
+        });
         
         const data = await res.json();
         
         if (!data.ok) throw new Error(data.error);
         
-        toast('Lead deleted');
+        showToast(`${count} lead(s) deleted successfully`);
+        selectedRows.clear();
+        updateBulkDeleteButton();
+        updateSelectAllCheckbox();
         await loadData();
-        showList(); // Return to list view after deletion
+        
       } catch (e) {
-        toast(e.message || 'Failed to delete lead', true);
+        showToast(e.message || 'Bulk delete failed', true);
+        console.error(e);
       }
     }
 
-    // Init
+    // --- Init ---
     loadData();
+    
+    // Auto refresh every 30s to keep statuses updated
+    setInterval(loadData, 30000);
+
   </script>
 </body>
 </html>
