@@ -42,6 +42,16 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const PORT = process.env.PORT || 3000;
 
+// -------------------- Environment Mode --------------------
+const NODE_ENV = process.env.NODE_ENV || "production";
+const IS_DEV = NODE_ENV === "development";
+
+if (IS_DEV) {
+  console.log("🔧 Running in DEVELOPMENT mode");
+} else {
+  console.log("🚀 Running in PRODUCTION mode");
+}
+
 // -------------------- Env checks --------------------
 const REQUIRED_ENVS = [
   "SUPABASE_URL",
@@ -50,8 +60,12 @@ const REQUIRED_ENVS = [
   "GOOGLE_SHEETS_SPREADSHEET_ID",
   "GOOGLE_SHEETS_TAB",
   "BLAND_API_KEY",
-  "PUBLIC_WEBHOOK_URL",
 ];
+
+// In dev mode, PUBLIC_WEBHOOK_URL is optional (will use localhost)
+if (!IS_DEV) {
+  REQUIRED_ENVS.push("PUBLIC_WEBHOOK_URL");
+}
 
 for (const k of REQUIRED_ENVS) {
   if (!process.env[k]) {
@@ -59,6 +73,102 @@ for (const k of REQUIRED_ENVS) {
     process.exit(1);
   }
 }
+
+// Determine webhook URL: use env var, or localhost in dev mode
+const PUBLIC_WEBHOOK_URL = process.env.PUBLIC_WEBHOOK_URL || 
+  (IS_DEV ? `http://localhost:${PORT}/webhooks/bland` : null);
+
+if (!PUBLIC_WEBHOOK_URL) {
+  console.error("Missing PUBLIC_WEBHOOK_URL");
+  process.exit(1);
+}
+
+console.log(`📡 Webhook URL: ${PUBLIC_WEBHOOK_URL}`);
+
+// -------------------- WhatsApp Notification Config --------------------
+// Optional env vars for WhatsApp alerts (Twilio)
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM; // e.g., "whatsapp:+14155238886"
+const SENIOR_AGENT_WHATSAPP = process.env.SENIOR_AGENT_WHATSAPP; // e.g., "whatsapp:+919876543210"
+
+// In-memory deduplication: track leads notified today
+// Key: lead_id or phone, Value: date string (YYYY-MM-DD)
+const whatsappNotifiedToday = new Map();
+
+/**
+ * Send WhatsApp notification for hot leads via Twilio
+ * Fails silently - never throws or blocks the caller
+ */
+async function sendWhatsAppHotLeadAlert({ leadName, phoneE164, propertyName, callSummary }) {
+  try {
+    // Check if WhatsApp config is available
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_WHATSAPP_FROM || !SENIOR_AGENT_WHATSAPP) {
+      // WhatsApp not configured - skip silently
+      return;
+    }
+
+    // Deduplication: one message per lead (by phone) per day
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const dedupeKey = phoneE164 || "unknown";
+    
+    if (whatsappNotifiedToday.get(dedupeKey) === today) {
+      // Already notified today - skip
+      return;
+    }
+
+    // Build the message
+    const message = `🔥 Hot Lead Alert
+Name: ${leadName || "Unknown"}
+Phone: ${phoneE164 || "N/A"}
+Project: ${propertyName || "Tulip Monsella"}
+Summary: ${callSummary || "No summary available"}
+Next step: Follow-up recommended`;
+
+    // Send via Twilio WhatsApp API
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+    const formData = new URLSearchParams();
+    formData.append("From", TWILIO_WHATSAPP_FROM);
+    formData.append("To", SENIOR_AGENT_WHATSAPP);
+    formData.append("Body", message);
+
+    const resp = await fetch(twilioUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: formData.toString(),
+    });
+
+    if (resp.ok) {
+      // Mark as notified today
+      whatsappNotifiedToday.set(dedupeKey, today);
+      console.log(`WhatsApp alert sent for lead: ${dedupeKey}`);
+    } else {
+      const errText = await resp.text();
+      console.error(`WhatsApp send failed: ${resp.status} ${errText}`);
+    }
+  } catch (err) {
+    // Log error silently - never throw
+    console.error(`WhatsApp notification error: ${err.message || err}`);
+  }
+}
+
+// Clean up old entries from deduplication map (runs daily at midnight)
+function cleanupWhatsAppDedupeMap() {
+  const today = new Date().toISOString().split("T")[0];
+  for (const [key, date] of whatsappNotifiedToday.entries()) {
+    if (date !== today) {
+      whatsappNotifiedToday.delete(key);
+    }
+  }
+}
+
+// Schedule cleanup every hour
+setInterval(cleanupWhatsAppDedupeMap, 60 * 60 * 1000);
 
 // -------------------- Supabase --------------------
 const supabase = createClient(
@@ -728,7 +838,7 @@ app.post("/trigger-call", async (req, res) => {
         phone: row.phone_e164,
         voiceId: row.voice_id || DEFAULT_VOICE_ID,
         task,
-        webhook: process.env.PUBLIC_WEBHOOK_URL,
+        webhook: PUBLIC_WEBHOOK_URL,
         metadata,
       });
 
@@ -1186,7 +1296,7 @@ app.post("/run-dialer", async (req, res) => {
       global: {
         task: globalTask, // Required fallback by Bland API
         voice: DEFAULT_VOICE_ID,
-        webhook: process.env.PUBLIC_WEBHOOK_URL,
+        webhook: PUBLIC_WEBHOOK_URL,
         record: true,
         wait_for_greeting: false,
         answered_by_enabled: true,
@@ -1314,6 +1424,31 @@ app.post("/webhooks/bland", async (req, res) => {
         },
         { onConflict: "bland_call_id" }
       );
+
+    // WhatsApp Hot Lead Alert: fire only when outcome is "interested"
+    if (outcome === "interested") {
+      // Get lead details for the alert (read from sheet if we have row number)
+      let leadName = "";
+      let propertyName = "Tulip Monsella"; // Default project name
+      
+      if (rowNumber) {
+        try {
+          const rowData = await readRow(rowNumber);
+          leadName = rowData.lead_name || "";
+          propertyName = rowData.property_name || rowData.property_address || "Tulip Monsella";
+        } catch (readErr) {
+          // Ignore read errors - use defaults
+        }
+      }
+      
+      // Send WhatsApp notification (non-blocking, fails silently)
+      sendWhatsAppHotLeadAlert({
+        leadName,
+        phoneE164: payload.to || payload.phone_number || "",
+        propertyName,
+        callSummary: summary,
+      });
+    }
 
     return res.status(200).send("ok");
   } catch (err) {
