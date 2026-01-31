@@ -498,30 +498,22 @@ const BlandWebhookSchema = z.object({
 }).passthrough();
 
 // -------------------- Bolna webhook schema --------------------
+// Use loose types for nested objects to avoid Zod v4 parse bugs when Bolna sends unexpected shapes
 const BolnaWebhookSchema = z.object({
-  id: z.string().nullable().optional(), // execution_id
+  id: z.string().nullable().optional(),
   execution_id: z.string().nullable().optional(),
   agent_id: z.string().nullable().optional(),
   batch_id: z.string().nullable().optional(),
-  status: z.string().nullable().optional(), // completed, call-disconnected, no-answer, busy, failed, etc.
+  status: z.string().nullable().optional(),
   conversation_time: z.number().nullable().optional(),
   total_cost: z.number().nullable().optional(),
   transcript: z.string().nullable().optional(),
   answered_by_voice_mail: z.boolean().nullable().optional(),
   error_message: z.string().nullable().optional(),
-  telephony_data: z.object({
-    duration: z.number().nullable().optional(),
-    to_number: z.string().nullable().optional(),
-    from_number: z.string().nullable().optional(),
-    recording_url: z.string().nullable().optional(),
-    call_type: z.string().nullable().optional(),
-    provider: z.string().nullable().optional(),
-    hangup_by: z.string().nullable().optional(),
-    hangup_reason: z.string().nullable().optional(),
-  }).passthrough().nullable().optional(),
+  telephony_data: z.record(z.any()).nullable().optional(),
   extracted_data: z.record(z.any()).nullable().optional(),
-  context_details: z.record(z.any()).nullable().optional(), // Contains our user_data variables
-  user_data: z.record(z.any()).nullable().optional(), // Alternative field name for user_data in some Bolna versions
+  context_details: z.record(z.any()).nullable().optional(),
+  user_data: z.record(z.any()).nullable().optional(),
 }).passthrough();
 
 function classifyOutcome({ answeredBy, summary, transcript, completed, callLength, dispositionTag }) {
@@ -1691,7 +1683,11 @@ app.post("/webhooks/bland", async (req, res) => {
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
-    const payload = BolnaWebhookSchema.parse(req.body);
+    const parseResult = BolnaWebhookSchema.safeParse(req.body);
+    const payload = parseResult.success ? parseResult.data : (req.body || {});
+    if (!parseResult.success) {
+      console.warn("Bolna webhook: schema parse failed, using raw body", parseResult.error?.message || parseResult.error);
+    }
 
     // Extract fields - Bolna uses different field names than Bland
     const executionId = payload.execution_id || payload.id || "";
