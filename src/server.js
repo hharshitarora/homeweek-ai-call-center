@@ -498,8 +498,6 @@ const BlandWebhookSchema = z.object({
 }).passthrough();
 
 // -------------------- Bolna webhook schema --------------------
-// Zod v4: z.record() requires two args (key, value). z.record(z.any()) is invalid and causes _zod undefined.
-// Bolna can send telephony_data.duration as string (e.g. "85") or number.
 const BolnaWebhookSchema = z.object({
   id: z.string().nullable().optional(), // execution_id
   execution_id: z.string().nullable().optional(),
@@ -509,11 +507,10 @@ const BolnaWebhookSchema = z.object({
   conversation_time: z.number().nullable().optional(),
   total_cost: z.number().nullable().optional(),
   transcript: z.string().nullable().optional(),
-  summary: z.string().nullable().optional(),
   answered_by_voice_mail: z.boolean().nullable().optional(),
   error_message: z.string().nullable().optional(),
   telephony_data: z.object({
-    duration: z.union([z.string(), z.number()]).nullable().optional(), // Bolna may send "85" or 85
+    duration: z.number().nullable().optional(),
     to_number: z.string().nullable().optional(),
     from_number: z.string().nullable().optional(),
     recording_url: z.string().nullable().optional(),
@@ -522,8 +519,9 @@ const BolnaWebhookSchema = z.object({
     hangup_by: z.string().nullable().optional(),
     hangup_reason: z.string().nullable().optional(),
   }).passthrough().nullable().optional(),
-  extracted_data: z.record(z.string(), z.unknown()).nullable().optional(),
-  context_details: z.record(z.string(), z.unknown()).nullable().optional(), // Contains our user_data variables
+  extracted_data: z.record(z.any()).nullable().optional(),
+  context_details: z.record(z.any()).nullable().optional(), // Contains our user_data variables
+  user_data: z.record(z.any()).nullable().optional(), // Alternative field name for user_data in some Bolna versions
 }).passthrough();
 
 function classifyOutcome({ answeredBy, summary, transcript, completed, callLength, dispositionTag }) {
@@ -1693,79 +1691,43 @@ app.post("/webhooks/bland", async (req, res) => {
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
-    // Guard: body can be undefined if Content-Type is wrong or body is empty (Zod v4 can throw _zod on undefined)
-    const raw = req.body ?? {};
-    const parseResult = BolnaWebhookSchema.safeParse(raw);
-    if (!parseResult.success) {
-      console.error("Bolna webhook validation failed:", parseResult.error?.issues ?? parseResult.error);
-      return res.status(400).json({ ok: false, error: "Invalid webhook payload", details: parseResult.error?.issues });
-    }
-    const payload = parseResult.data;
+    const payload = BolnaWebhookSchema.parse(req.body);
 
     // Extract fields - Bolna uses different field names than Bland
     const executionId = payload.execution_id || payload.id || "";
     const status = payload.status || "unknown";
     const transcript = payload.transcript || "";
-    // telephony_data.duration can be string ("85") or number; coerce to number for downstream use
-    const durationSecRaw = payload.telephony_data?.duration ?? payload.conversation_time ?? null;
-    const durationSec = durationSecRaw != null ? Number(durationSecRaw) : null;
+    const durationSec = payload.telephony_data?.duration || payload.conversation_time || null;
     const recordingUrl = payload.telephony_data?.recording_url || "";
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
     const hangupReason = payload.telephony_data?.hangup_reason || "";
 
-    // Extract context_details which contains our user_data variables (Bolna may not echo user_data back)
-    const contextDetails = payload.context_details || {};
+    // Extract context_details which contains our user_data variables
+    // Note: Bolna may return user_data directly or under context_details depending on API version
+    const contextDetails = payload.context_details || payload.user_data || {};
     const leadId = contextDetails.lead_id || "";
     const propertyId = contextDetails.property_id || "";
-    let rowNumber = contextDetails.sheet_row != null && contextDetails.sheet_row !== ""
-      ? Number(contextDetails.sheet_row)
-      : null;
-
-    // Fallback 1: find row by bolna_execution_id (only works if sheet has that column and we wrote it on call start)
+    
+    // Try to get row number from context_details first
+    let rowNumber = contextDetails.sheet_row ? Number(contextDetails.sheet_row) : null;
+    
+    // Fallback: if no sheet_row in context, look up by bolna_execution_id in the sheet
     if (!rowNumber && executionId) {
       try {
         const { rows } = await readAllRows();
-        const match = rows.find(
-          (r) => String(r.bolna_execution_id || "").trim() === String(executionId).trim()
-        );
-        if (match && match.__rowNumber) {
-          rowNumber = match.__rowNumber;
-          console.log(`Bolna webhook: resolved sheet row by bolna_execution_id -> row ${rowNumber}`);
+        const matchingRow = rows.find(r => r.bolna_execution_id === executionId);
+        if (matchingRow) {
+          rowNumber = matchingRow.__rowNumber;
+          console.log(`Bolna webhook: resolved row ${rowNumber} by bolna_execution_id lookup`);
         }
       } catch (lookupErr) {
-        console.warn("Bolna webhook: fallback row lookup failed:", lookupErr?.message || lookupErr);
+        console.error(`Bolna webhook: failed to lookup row by bolna_execution_id: ${lookupErr.message}`);
       }
     }
-
-    // Fallback 2: find row by phone + status "calling" (works even when sheet has no bolna_execution_id column)
-    const toNumber = (payload.telephony_data?.to_number || payload.user_number || "").trim();
-    if (!rowNumber && toNumber) {
-      try {
-        const { rows } = await readAllRows();
-        const normalize = (p) => (p || "").replace(/\D/g, "").slice(-10);
-        const targetDigits = normalize(toNumber);
-        const callingRows = rows.filter((r) => {
-          const rowPhone = String(r.phone_e164 || "").trim();
-          const status = String(r.call_status || "").toLowerCase();
-          return status === "calling" && targetDigits && normalize(rowPhone) === targetDigits;
-        });
-        // Prefer most recent by last_call_at
-        if (callingRows.length > 0) {
-          const best = callingRows.sort((a, b) => {
-            const aT = a.last_call_at || "";
-            const bT = b.last_call_at || "";
-            return bT.localeCompare(aT);
-          })[0];
-          rowNumber = best.__rowNumber;
-          console.log(`Bolna webhook: resolved sheet row by phone + calling -> row ${rowNumber}`);
-        }
-      } catch (lookupErr) {
-        console.warn("Bolna webhook: phone fallback lookup failed:", lookupErr?.message || lookupErr);
-      }
-    }
-
+    
+    // Log warning if we still can't find the row
     if (!rowNumber) {
-      console.warn(`Bolna webhook: no sheet row resolved (execution_id=${executionId}). Add column bolna_execution_id or ensure context_details.sheet_row is set. Sheet will not be updated.`);
+      console.warn(`Bolna webhook: no sheet row resolved (execution_id=${executionId}). Ensure bolna_execution_id column exists and was set when call started. Sheet will not be updated.`);
     }
 
     // Map Bolna status to answered_by for classifyOutcome compatibility
@@ -1781,7 +1743,7 @@ app.post("/webhooks/bolna", async (req, res) => {
     // Use our existing classifyOutcome function
     const { outcome, next_action } = classifyOutcome({
       answeredBy,
-      summary: payload.summary ?? "",
+      summary: "", // Bolna doesn't provide summary in the same way
       transcript,
       completed: status === "completed",
       callLength: durationSec,
@@ -1845,7 +1807,7 @@ app.post("/webhooks/bolna", async (req, res) => {
           duration_sec: durationSec,
           transcript,
           recording_url: recordingUrl,
-          raw_webhook: raw,
+          raw_webhook: req.body,
           ended_at: new Date().toISOString(),
         },
         { onConflict: "bolna_execution_id" }
