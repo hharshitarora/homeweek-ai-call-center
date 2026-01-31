@@ -498,6 +498,8 @@ const BlandWebhookSchema = z.object({
 }).passthrough();
 
 // -------------------- Bolna webhook schema --------------------
+// Zod v4: z.record() requires two args (key, value). z.record(z.any()) is invalid and causes _zod undefined.
+// Bolna can send telephony_data.duration as string (e.g. "85") or number.
 const BolnaWebhookSchema = z.object({
   id: z.string().nullable().optional(), // execution_id
   execution_id: z.string().nullable().optional(),
@@ -507,10 +509,11 @@ const BolnaWebhookSchema = z.object({
   conversation_time: z.number().nullable().optional(),
   total_cost: z.number().nullable().optional(),
   transcript: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
   answered_by_voice_mail: z.boolean().nullable().optional(),
   error_message: z.string().nullable().optional(),
   telephony_data: z.object({
-    duration: z.number().nullable().optional(),
+    duration: z.union([z.string(), z.number()]).nullable().optional(), // Bolna may send "85" or 85
     to_number: z.string().nullable().optional(),
     from_number: z.string().nullable().optional(),
     recording_url: z.string().nullable().optional(),
@@ -519,8 +522,8 @@ const BolnaWebhookSchema = z.object({
     hangup_by: z.string().nullable().optional(),
     hangup_reason: z.string().nullable().optional(),
   }).passthrough().nullable().optional(),
-  extracted_data: z.record(z.any()).nullable().optional(),
-  context_details: z.record(z.any()).nullable().optional(), // Contains our user_data variables
+  extracted_data: z.record(z.string(), z.unknown()).nullable().optional(),
+  context_details: z.record(z.string(), z.unknown()).nullable().optional(), // Contains our user_data variables
 }).passthrough();
 
 function classifyOutcome({ answeredBy, summary, transcript, completed, callLength, dispositionTag }) {
@@ -1690,13 +1693,22 @@ app.post("/webhooks/bland", async (req, res) => {
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
-    const payload = BolnaWebhookSchema.parse(req.body);
+    // Guard: body can be undefined if Content-Type is wrong or body is empty (Zod v4 can throw _zod on undefined)
+    const raw = req.body ?? {};
+    const parseResult = BolnaWebhookSchema.safeParse(raw);
+    if (!parseResult.success) {
+      console.error("Bolna webhook validation failed:", parseResult.error?.issues ?? parseResult.error);
+      return res.status(400).json({ ok: false, error: "Invalid webhook payload", details: parseResult.error?.issues });
+    }
+    const payload = parseResult.data;
 
     // Extract fields - Bolna uses different field names than Bland
     const executionId = payload.execution_id || payload.id || "";
     const status = payload.status || "unknown";
     const transcript = payload.transcript || "";
-    const durationSec = payload.telephony_data?.duration || payload.conversation_time || null;
+    // telephony_data.duration can be string ("85") or number; coerce to number for downstream use
+    const durationSecRaw = payload.telephony_data?.duration ?? payload.conversation_time ?? null;
+    const durationSec = durationSecRaw != null ? Number(durationSecRaw) : null;
     const recordingUrl = payload.telephony_data?.recording_url || "";
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
     const hangupReason = payload.telephony_data?.hangup_reason || "";
@@ -1720,7 +1732,7 @@ app.post("/webhooks/bolna", async (req, res) => {
     // Use our existing classifyOutcome function
     const { outcome, next_action } = classifyOutcome({
       answeredBy,
-      summary: "", // Bolna doesn't provide summary in the same way
+      summary: payload.summary ?? "",
       transcript,
       completed: status === "completed",
       callLength: durationSec,
@@ -1784,7 +1796,7 @@ app.post("/webhooks/bolna", async (req, res) => {
           duration_sec: durationSec,
           transcript,
           recording_url: recordingUrl,
-          raw_webhook: req.body,
+          raw_webhook: raw,
           ended_at: new Date().toISOString(),
         },
         { onConflict: "bolna_execution_id" }
