@@ -935,10 +935,12 @@ app.post("/trigger-call", async (req, res) => {
         callId = bolnaResp.execution_id || "";
         callResponse = bolnaResp;
 
-        // Save bolna_execution_id to sheet
+        // Save bolna_execution_id to sheet immediately so webhooks can find it
+        console.log(`Bolna: saving execution_id=${callId} to row ${rowNumber}`);
         await updateRow(rowNumber, {
           bolna_execution_id: callId,
         });
+        console.log(`Bolna: saved execution_id to sheet row ${rowNumber}`);
 
         // Save to Supabase with bolna_execution_id
         await supabase.from("calls").insert({
@@ -1712,7 +1714,13 @@ app.post("/webhooks/bolna", async (req, res) => {
     // Fallback: if no sheet_row in context, look up by bolna_execution_id in the sheet
     if (!rowNumber && executionId) {
       try {
-        const { rows } = await readAllRows();
+        const { headers, rows } = await readAllRows();
+        
+        // Debug: check if column exists and log existing values
+        const hasColumn = headers.includes("bolna_execution_id");
+        const existingIds = rows.map(r => ({ row: r.__rowNumber, id: r.bolna_execution_id || "(empty)" })).filter(r => r.id !== "(empty)");
+        console.log(`Bolna webhook lookup: column exists=${hasColumn}, looking for=${executionId}, existing ids=${JSON.stringify(existingIds)}`);
+        
         const matchingRow = rows.find(r => r.bolna_execution_id === executionId);
         if (matchingRow) {
           rowNumber = matchingRow.__rowNumber;
