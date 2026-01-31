@@ -445,7 +445,22 @@
         <button class="btn btn-secondary btn-sm" onclick="loadData()">Refresh</button>
         <div style="position:relative; display:inline-block;">
           <button class="btn btn-secondary btn-sm" onclick="toggleBulkMenu()">⚡ Bulk Actions</button>
-          <div id="bulkMenu" style="display:none; position:absolute; right:0; top:100%; background:white; border:1px solid var(--separator); border-radius:8px; box-shadow:var(--shadow-md); padding:4px; min-width:140px; z-index:100; margin-top:4px;">
+          <div id="bulkMenu" style="display:none; position:absolute; right:0; top:100%; background:white; border:1px solid var(--separator); border-radius:8px; box-shadow:var(--shadow-md); padding:8px; min-width:220px; z-index:100; margin-top:4px;">
+            <div style="padding:4px 8px 12px; border-bottom:1px solid var(--separator); margin-bottom:4px;">
+              <label style="font-size:12px; color:var(--text-secondary); display:block; margin-bottom:4px;">
+                Hinglish Ratio: <span id="bolnaRatioLabel">0</span>%
+              </label>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:11px; color:var(--text-tertiary);">EN</span>
+                <input type="range" id="bolnaRatioSlider" min="0" max="100" value="0" step="10" 
+                  style="flex:1; cursor:pointer;" 
+                  oninput="document.getElementById('bolnaRatioLabel').textContent = this.value">
+                <span style="font-size:11px; color:var(--text-tertiary);">HI</span>
+              </div>
+              <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px;">
+                0% = All English (Bland) | 100% = All Hinglish (Bolna)
+              </div>
+            </div>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(5)">Call 5 Leads</button>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(25)">Call 25 Leads</button>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(50)">Call 50 Leads</button>
@@ -541,7 +556,8 @@
     // --- Configuration ---
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const PRODUCTION_API = 'https://homeweek-ai-call-center-production.up.railway.app';
-    const API_BASE_URL = window.API_BASE_URL || (isLocalhost ? '' : PRODUCTION_API);
+    const LOCAL_API = 'http://localhost:3000';
+    const API_BASE_URL = window.API_BASE_URL || (isLocalhost ? LOCAL_API : PRODUCTION_API);
 
     // --- State ---
     let allRecords = [];
@@ -588,7 +604,10 @@
         updateStats();
         applyFilters(); // This triggers render
       } catch (e) {
-        showToast('Failed to load data', true);
+        const msg = isLocalhost && (e.message === 'Failed to fetch' || e.name === 'TypeError')
+          ? 'Failed to load data. Is the server running? (npm run dev on port 3000)'
+          : 'Failed to load data';
+        showToast(msg, true);
         console.error(e);
       }
     }
@@ -792,10 +811,15 @@
         <form id="drawerForm" class="drawer-body" onsubmit="handleFormSubmit(event)">
           <!-- Action Buttons (if view mode) -->
           ${!editing && !adding ? `
-            <div style="padding: 20px 24px 0; display:flex; gap:10px;">
-              <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber})">
-                ${record.call_status === 'calling' ? 'Calling...' : '📞 Start Call'}
-              </button>
+            <div style="padding: 20px 24px 0; display:flex; flex-direction:column; gap:10px;">
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber}, 'bland')">
+                  ${record.call_status === 'calling' ? 'Calling...' : '🇺🇸 Call (English)'}
+                </button>
+                <button type="button" class="btn btn-call" style="flex:1; background: linear-gradient(135deg, #ff9500 0%, #ff6b00 100%);" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber}, 'bolna')">
+                  ${record.call_status === 'calling' ? 'Calling...' : '🇮🇳 Call (Hinglish)'}
+                </button>
+              </div>
               <button type="button" class="btn btn-secondary" onclick="openDrawer(${record.__rowNumber}, true)">Edit</button>
             </div>
           ` : ''}
@@ -912,12 +936,14 @@
       }
     }
 
-    async function triggerCall(rowNumber) {
+    async function triggerCall(rowNumber, provider = 'bland') {
       try {
+        const providerLabel = provider === 'bolna' ? 'Hinglish' : 'English';
+        
         const res = await fetch(`${API_BASE_URL}/trigger-call`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheet_row: rowNumber })
+          body: JSON.stringify({ sheet_row: rowNumber, provider })
         });
         
         const data = await res.json();
@@ -927,14 +953,18 @@
         } else if (!data.ok) {
           throw new Error(data.error);
         } else {
-          showToast('Calling...');
+          showToast(`Calling via ${providerLabel}...`);
         }
         
         await loadData();
         // Refresh drawer if open
         if (selectedRecordId === rowNumber) openDrawer(rowNumber, false);
       } catch (e) {
-        showToast(e.message || 'Call failed', true);
+        const isNetworkError = e.message === 'Failed to fetch' || e.name === 'TypeError';
+        const msg = isLocalhost && isNetworkError
+          ? 'Cannot reach server. Is it running? (npm run dev)'
+          : (e.message || 'Call failed');
+        showToast(msg, true);
       }
     }
     
@@ -1003,16 +1033,22 @@
     });
 
     async function triggerBulkCall(limit) {
+      const bolnaRatio = parseInt(document.getElementById('bolnaRatioSlider')?.value || '0', 10);
       toggleBulkMenu();
-      if (!confirm(`Are you sure you want to start ${limit} calls? This will trigger calls immediately.`)) return;
+      
+      const ratioText = bolnaRatio === 0 ? 'all English (Bland)' : 
+                        bolnaRatio === 100 ? 'all Hinglish (Bolna)' : 
+                        `${100 - bolnaRatio}% English + ${bolnaRatio}% Hinglish`;
+      
+      if (!confirm(`Start ${limit} calls with ${ratioText}?\n\nThis will trigger calls immediately.`)) return;
 
       try {
-        showToast(`Starting batch of ${limit} calls...`);
+        showToast(`Starting batch of ${limit} calls (${ratioText})...`);
         
         const res = await fetch(`${API_BASE_URL}/run-dialer`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ limit })
+          body: JSON.stringify({ limit, bolna_ratio: bolnaRatio })
         });
 
         const data = await res.json();
