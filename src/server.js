@@ -1713,11 +1713,60 @@ app.post("/webhooks/bolna", async (req, res) => {
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
     const hangupReason = payload.telephony_data?.hangup_reason || "";
 
-    // Extract context_details which contains our user_data variables
+    // Extract context_details which contains our user_data variables (Bolna may not echo user_data back)
     const contextDetails = payload.context_details || {};
     const leadId = contextDetails.lead_id || "";
     const propertyId = contextDetails.property_id || "";
-    const rowNumber = contextDetails.sheet_row ? Number(contextDetails.sheet_row) : null;
+    let rowNumber = contextDetails.sheet_row != null && contextDetails.sheet_row !== ""
+      ? Number(contextDetails.sheet_row)
+      : null;
+
+    // Fallback 1: find row by bolna_execution_id (only works if sheet has that column and we wrote it on call start)
+    if (!rowNumber && executionId) {
+      try {
+        const { rows } = await readAllRows();
+        const match = rows.find(
+          (r) => String(r.bolna_execution_id || "").trim() === String(executionId).trim()
+        );
+        if (match && match.__rowNumber) {
+          rowNumber = match.__rowNumber;
+          console.log(`Bolna webhook: resolved sheet row by bolna_execution_id -> row ${rowNumber}`);
+        }
+      } catch (lookupErr) {
+        console.warn("Bolna webhook: fallback row lookup failed:", lookupErr?.message || lookupErr);
+      }
+    }
+
+    // Fallback 2: find row by phone + status "calling" (works even when sheet has no bolna_execution_id column)
+    const toNumber = (payload.telephony_data?.to_number || payload.user_number || "").trim();
+    if (!rowNumber && toNumber) {
+      try {
+        const { rows } = await readAllRows();
+        const normalize = (p) => (p || "").replace(/\D/g, "").slice(-10);
+        const targetDigits = normalize(toNumber);
+        const callingRows = rows.filter((r) => {
+          const rowPhone = String(r.phone_e164 || "").trim();
+          const status = String(r.call_status || "").toLowerCase();
+          return status === "calling" && targetDigits && normalize(rowPhone) === targetDigits;
+        });
+        // Prefer most recent by last_call_at
+        if (callingRows.length > 0) {
+          const best = callingRows.sort((a, b) => {
+            const aT = a.last_call_at || "";
+            const bT = b.last_call_at || "";
+            return bT.localeCompare(aT);
+          })[0];
+          rowNumber = best.__rowNumber;
+          console.log(`Bolna webhook: resolved sheet row by phone + calling -> row ${rowNumber}`);
+        }
+      } catch (lookupErr) {
+        console.warn("Bolna webhook: phone fallback lookup failed:", lookupErr?.message || lookupErr);
+      }
+    }
+
+    if (!rowNumber) {
+      console.warn(`Bolna webhook: no sheet row resolved (execution_id=${executionId}). Add column bolna_execution_id or ensure context_details.sheet_row is set. Sheet will not be updated.`);
+    }
 
     // Map Bolna status to answered_by for classifyOutcome compatibility
     let answeredBy = "unknown";
