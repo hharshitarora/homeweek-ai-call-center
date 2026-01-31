@@ -787,9 +787,11 @@ Ending
 async function startBlandCall({ phone, voiceId, task, webhook, metadata }) {
   // Detect if it's an India number (+91)
   const isIndiaNumber = phone.startsWith("+91");
-  
+  const fromNumber = process.env.BLAND_FROM_NUMBER || "+14154492886";
+
   const callConfig = {
     phone_number: phone,
+    from_number: fromNumber,
     voice: voiceId,
     record: true,
     wait_for_greeting: false,
@@ -829,11 +831,9 @@ async function startBlandCall({ phone, voiceId, task, webhook, metadata }) {
 
 // -------------------- Start Bolna call (Hinglish) --------------------
 async function startBolnaCall({ phone, userData }) {
-  const fromNumber = process.env.BOLNA_FROM_NUMBER || "+14154492886";
   const callPayload = {
     agent_id: process.env.BOLNA_AGENT_ID,
     recipient_phone_number: phone,
-    from: fromNumber,
     user_data: userData, // Context variables: {lead_name, property_name, lead_id, sheet_row, etc.}
   };
 
