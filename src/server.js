@@ -1683,20 +1683,22 @@ app.post("/webhooks/bland", async (req, res) => {
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
-    const parseResult = BolnaWebhookSchema.safeParse(req.body);
-    const payload = parseResult.success ? parseResult.data : (req.body || {});
-    if (!parseResult.success) {
-      console.warn("Bolna webhook: schema parse failed, using raw body", parseResult.error?.message || parseResult.error);
-    }
+    // Skip Zod validation entirely - Zod v4 has bugs with safeParse throwing exceptions
+    // Just use raw body with safe property access
+    const payload = req.body || {};
+    
+    // Log the raw payload for debugging
+    console.log("Bolna webhook received payload:", JSON.stringify(payload).slice(0, 500));
 
     // Extract fields - Bolna uses different field names than Bland
     const executionId = payload.execution_id || payload.id || "";
     const status = payload.status || "unknown";
     const transcript = payload.transcript || "";
-    const durationSec = payload.telephony_data?.duration || payload.conversation_time || null;
-    const recordingUrl = payload.telephony_data?.recording_url || "";
+    const telephonyData = payload.telephony_data || {};
+    const durationSec = telephonyData.duration || payload.conversation_time || null;
+    const recordingUrl = telephonyData.recording_url || "";
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
-    const hangupReason = payload.telephony_data?.hangup_reason || "";
+    const hangupReason = telephonyData.hangup_reason || "";
 
     // Extract context_details which contains our user_data variables
     // Note: Bolna may return user_data directly or under context_details depending on API version
