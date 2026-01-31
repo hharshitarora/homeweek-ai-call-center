@@ -1769,6 +1769,10 @@ app.post("/webhooks/bolna", async (req, res) => {
     } else if (answeredByVoicemail) {
       finalOutcome = "voicemail";
       finalNextAction = "call_back_later";
+    } else if ((status === "completed" || status === "call-disconnected") && transcript && finalOutcome === "human_followup") {
+      // For Bolna: if call completed with conversation, treat as interested
+      finalOutcome = "interested";
+      finalNextAction = "human_followup";
     }
 
     // Determine call_status based on outcome
