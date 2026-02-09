@@ -1,6 +1,6 @@
 /**
- * server.js — Phase 1B working server
- * Node + Express + Google Sheets + Supabase + Bland + Bolna
+ * server.js — Phase 2: Supabase as primary database
+ * Node + Express + Supabase + Bland + Bolna
  *
  * Endpoints:
  *   GET  /health
@@ -10,6 +10,7 @@
  *   POST /upload-csv
  *   PUT  /update-row
  *   DELETE /delete-row
+ *   DELETE /delete-rows-bulk
  *   POST /trigger-call        - Single call (supports provider: "bland" | "bolna")
  *   POST /run-dialer          - Bulk calls (supports bolna_ratio for A/B testing)
  *   POST /webhooks/bland      - Bland call completion webhook
@@ -19,7 +20,6 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import multer from "multer";
@@ -57,9 +57,6 @@ if (IS_DEV) {
 const REQUIRED_ENVS = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "GOOGLE_SERVICE_ACCOUNT_JSON_BASE64",
-  "GOOGLE_SHEETS_SPREADSHEET_ID",
-  "GOOGLE_SHEETS_TAB",
   "BLAND_API_KEY",
   "BOLNA_API_KEY",
   "BOLNA_AGENT_ID",
@@ -183,293 +180,185 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// -------------------- Google Sheets --------------------
-const SHEET_ID = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
-const TAB = process.env.GOOGLE_SHEETS_TAB;
-
 // -------------------- Defaults --------------------
 const DEFAULT_VOICE_ID = "095a1518-ecdf-4870-a5ff-c74b43a08764";
 
-function getGoogleAuth() {
-  const json = JSON.parse(
-    Buffer.from(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64, "base64").toString("utf8")
-  );
+// -------------------- Supabase Data Functions --------------------
+// These replace the old Google Sheets functions
 
-  return new google.auth.JWT({
-    email: json.client_email,
-    key: json.private_key,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-  });
-}
-
-async function getSheetsClient() {
-  const auth = getGoogleAuth();
-  await auth.authorize();
-  return google.sheets({ version: "v4", auth });
-}
+// Static headers list (columns in the leads table)
+const LEAD_HEADERS = [
+  "id", "lead_id", "lead_name", "phone_e164", "email",
+  "property_id", "property_name", "property_address", "property_price_inr",
+  "property_beds_baths", "property_highlights", "showing_windows", "property_url",
+  "call_status", "call_attempts", "last_call_at", "bland_call_id", "bolna_execution_id",
+  "call_provider", "outcome", "next_action", "notes", "transcript", "recording_url",
+  "summary", "voice_id", "created_at", "updated_at"
+];
 
 async function readAllRows() {
-  const sheets = await getSheetsClient();
-  const range = `${TAB}!A1:Z10000`;
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .order("created_at", { ascending: true });
 
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range,
-  });
-
-  const values = res.data.values || [];
-  if (values.length === 0) {
-    console.log("readAllRows: No values found in sheet");
-    return { headers: [], rows: [] };
+  if (error) {
+    console.error("readAllRows error:", error.message);
+    throw error;
   }
 
-  const headers = values[0] || [];
-  if (headers.length === 0) {
-    console.log("readAllRows: No headers found");
-    return { headers: [], rows: [] };
-  }
+  const rows = (data || []).map(row => ({
+    ...row,
+    // Keep id as the primary identifier for frontend
+    call_attempts: row.call_attempts ?? 0,
+  }));
 
-  const rows = values.slice(1)
-    .filter(row => row && row.length > 0) // Filter out completely empty rows
-    .map((row, idx) => {
-      const obj = {};
-      headers.forEach((h, i) => (obj[h] = row[i] ?? ""));
-      obj.__rowNumber = idx + 2; // header is row 1
-      return obj;
-    });
-
-  console.log(`readAllRows: Returning ${headers.length} headers, ${rows.length} rows`);
-  return { headers, rows };
+  console.log(`readAllRows: Returning ${rows.length} rows`);
+  return { headers: LEAD_HEADERS, rows };
 }
 
-async function readRow(rowNumber) {
-  const sheets = await getSheetsClient();
+async function readRow(id) {
+  // id can be either the Supabase UUID or lead_id
+  let query = supabase.from("leads").select("*");
 
-  // Get headers
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A1:Z1`,
-  });
-
-  const headers = (headerRes.data.values?.[0] || []);
-
-  // Get specific row
-  const rowRange = `${TAB}!A${rowNumber}:Z${rowNumber}`;
-  const rowRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: rowRange,
-  });
-
-  const rowValues = rowRes.data.values?.[0] || [];
-  const obj = {};
-  headers.forEach((h, i) => (obj[h] = rowValues[i] ?? ""));
-  obj.__rowNumber = rowNumber;
-
-  return obj;
-}
-
-async function updateRow(rowNumber, updates) {
-  const sheets = await getSheetsClient();
-
-  // Get headers so we can map key -> column index
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A1:Z1`,
-  });
-
-  const headers = (headerRes.data.values?.[0] || []);
-  const headerIndex = Object.fromEntries(headers.map((h, i) => [h, i]));
-
-  // Get current row
-  const rowRange = `${TAB}!A${rowNumber}:Z${rowNumber}`;
-  const rowRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: rowRange,
-  });
-
-  const current = rowRes.data.values?.[0] || [];
-  const newRow = [...current];
-
-  for (const [key, value] of Object.entries(updates)) {
-    const idx = headerIndex[key];
-    if (idx === undefined) continue;
-    newRow[idx] = value ?? "";
+  // Check if it's a UUID format or lead_id format
+  if (typeof id === "string" && id.startsWith("lead_")) {
+    query = query.eq("lead_id", id);
+  } else {
+    query = query.eq("id", id);
   }
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SHEET_ID,
-    range: rowRange,
-    valueInputOption: "RAW",
-    requestBody: { values: [newRow] },
-  });
+  const { data, error } = await query.single();
+
+  if (error) {
+    console.error("readRow error:", error.message);
+    throw error;
+  }
+
+  return data;
+}
+
+async function updateRow(id, updates) {
+  // id can be either the Supabase UUID or lead_id
+  let query = supabase.from("leads");
+
+  // Remove any fields that shouldn't be updated
+  const cleanUpdates = { ...updates };
+  delete cleanUpdates.id;
+  delete cleanUpdates.created_at;
+
+  // Check if it's a UUID format or lead_id format
+  if (typeof id === "string" && id.startsWith("lead_")) {
+    query = query.update(cleanUpdates).eq("lead_id", id);
+  } else {
+    query = query.update(cleanUpdates).eq("id", id);
+  }
+
+  const { error } = await query;
+
+  if (error) {
+    console.error("updateRow error:", error.message);
+    throw error;
+  }
 }
 
 async function appendRow(rowData) {
-  const sheets = await getSheetsClient();
+  // Auto-generate IDs if not provided
+  const insertData = {
+    ...rowData,
+    lead_id: rowData.lead_id || generateId("lead"),
+    property_id: rowData.property_id || generateId("prop"),
+    call_status: rowData.call_status || "queued",
+    call_attempts: parseInt(rowData.call_attempts, 10) || 0,
+  };
 
-  // Get headers to determine column order
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A1:Z1`,
-  });
+  const { data, error } = await supabase
+    .from("leads")
+    .insert(insertData)
+    .select()
+    .single();
 
-  const headers = (headerRes.data.values?.[0] || []);
-  
-  // Build the row array in header order
-  const newRow = headers.map(header => rowData[header] ?? "");
+  if (error) {
+    console.error("appendRow error:", error.message);
+    throw error;
+  }
 
-  // Append to the sheet
-  const result = await sheets.spreadsheets.values.append({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A:Z`,
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [newRow] },
-  });
-
-  // Extract the row number from the updated range
-  const updatedRange = result.data.updates?.updatedRange || "";
-  const match = updatedRange.match(/!A(\d+):/);
-  const rowNumber = match ? parseInt(match[1], 10) : null;
-
-  return { rowNumber, headers };
+  return { id: data.id, lead_id: data.lead_id, headers: LEAD_HEADERS };
 }
 
 async function getHeaders() {
-  const sheets = await getSheetsClient();
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A1:Z1`,
-  });
-  return headerRes.data.values?.[0] || [];
+  return LEAD_HEADERS;
 }
 
-async function deleteRow(rowNumber) {
-  const sheets = await getSheetsClient();
-  
-  // Get the sheet ID for the tab
-  const spreadsheet = await sheets.spreadsheets.get({
-    spreadsheetId: SHEET_ID,
-  });
-  
-  const sheet = spreadsheet.data.sheets.find(s => s.properties.title === TAB);
-  if (!sheet) {
-    throw new Error(`Sheet tab "${TAB}" not found`);
+async function deleteRow(id) {
+  let query = supabase.from("leads");
+
+  // Check if it's a UUID format or lead_id format
+  if (typeof id === "string" && id.startsWith("lead_")) {
+    query = query.delete().eq("lead_id", id);
+  } else {
+    query = query.delete().eq("id", id);
   }
-  
-  const sheetId = sheet.properties.sheetId;
-  
-  // Delete the row using batchUpdate
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SHEET_ID,
-    requestBody: {
-      requests: [
-        {
-          deleteDimension: {
-            range: {
-              sheetId: sheetId,
-              dimension: "ROWS",
-              startIndex: rowNumber - 1, // 0-indexed, rowNumber is 1-indexed
-              endIndex: rowNumber, // endIndex is exclusive
-            },
-          },
-        },
-      ],
-    },
-  });
+
+  const { error } = await query;
+
+  if (error) {
+    console.error("deleteRow error:", error.message);
+    throw error;
+  }
 }
 
-async function deleteRowsBulk(rowNumbers) {
-  if (!rowNumbers || rowNumbers.length === 0) {
+async function deleteRowsBulk(ids) {
+  if (!ids || ids.length === 0) {
     return;
   }
 
-  const sheets = await getSheetsClient();
-  
-  // Get the sheet ID for the tab
-  const spreadsheet = await sheets.spreadsheets.get({
-    spreadsheetId: SHEET_ID,
-  });
-  
-  const sheet = spreadsheet.data.sheets.find(s => s.properties.title === TAB);
-  if (!sheet) {
-    throw new Error(`Sheet tab "${TAB}" not found`);
+  const { error } = await supabase
+    .from("leads")
+    .delete()
+    .in("id", ids);
+
+  if (error) {
+    console.error("deleteRowsBulk error:", error.message);
+    throw error;
   }
-  
-  const sheetId = sheet.properties.sheetId;
-
-  // Sort row numbers in descending order to avoid index shifting issues
-  const sortedRows = [...rowNumbers].filter(r => r >= 2).sort((a, b) => b - a);
-
-  if (sortedRows.length === 0) {
-    return;
-  }
-
-  // Create delete requests for each row
-  const requests = sortedRows.map(rowNumber => ({
-    deleteDimension: {
-      range: {
-        sheetId: sheetId,
-        dimension: "ROWS",
-        startIndex: rowNumber - 1, // 0-indexed, rowNumber is 1-indexed
-        endIndex: rowNumber, // endIndex is exclusive
-      },
-    },
-  }));
-
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SHEET_ID,
-    requestBody: { requests },
-  });
-}
-
-// -------------------- Batch Update Rows --------------------
-
-function getColLetter(n) {
-  let char = "";
-  while (n >= 0) {
-    char = String.fromCharCode(n % 26 + 65) + char;
-    n = Math.floor(n / 26) - 1;
-  }
-  return char;
 }
 
 async function updateRowsBatch(updates) {
-  const sheets = await getSheetsClient();
+  // updates is an array of { id, values }
+  for (const { id, values } of updates) {
+    await updateRow(id, values);
+  }
+}
 
-  // Get headers to map keys to columns
-  const headerRes = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: `${TAB}!A1:Z1`,
-  });
+// Helper to find lead by bolna_execution_id
+async function findLeadByBolnaExecutionId(executionId) {
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("bolna_execution_id", executionId)
+    .single();
 
-  const headers = (headerRes.data.values?.[0] || []);
-  const headerIndex = Object.fromEntries(headers.map((h, i) => [h, i]));
+  if (error && error.code !== "PGRST116") { // PGRST116 = no rows returned
+    console.error("findLeadByBolnaExecutionId error:", error.message);
+  }
 
-  // Construct data for batchUpdate
-  const data = updates.map(({ rowNumber, values }) => {
-    return Object.entries(values).map(([key, val]) => {
-      const colIdx = headerIndex[key];
-      if (colIdx === undefined) return null;
-      
-      const colLetter = getColLetter(colIdx);
-      
-      return {
-        range: `${TAB}!${colLetter}${rowNumber}`,
-        values: [[val]]
-      };
-    }).filter(Boolean);
-  }).flat();
+  return data || null;
+}
 
-  if (data.length === 0) return;
+// Helper to find lead by bland_call_id
+async function findLeadByBlandCallId(callId) {
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("bland_call_id", callId)
+    .single();
 
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: SHEET_ID,
-    resource: {
-      valueInputOption: "RAW",
-      data: data
-    }
-  });
+  if (error && error.code !== "PGRST116") {
+    console.error("findLeadByBlandCallId error:", error.message);
+  }
+
+  return data || null;
 }
 
 // -------------------- Bland webhook schema (matches your payload) --------------------
@@ -490,7 +379,7 @@ const BlandWebhookSchema = z.object({
     .object({
       lead_id: z.string().nullable().optional(),
       property_id: z.string().nullable().optional(),
-      sheet_row: z.number().nullable().optional(),
+      id: z.string().nullable().optional(), // Supabase UUID
     })
     .passthrough()
     .nullable()
@@ -862,49 +751,53 @@ app.get("/", (req, res) => {
 
 /**
  * POST /trigger-call
- * Triggers a call for a specific sheet row.
- * Input: { "sheet_row": 2, "provider": "bland" | "bolna" }
+ * Triggers a call for a specific lead.
+ * Input: { "id": "uuid-here", "provider": "bland" | "bolna" }
  * provider defaults to "bland" (English). Use "bolna" for Hinglish calls.
  */
 app.post("/trigger-call", async (req, res) => {
   try {
-    const { sheet_row, provider = "bland" } = req.body;
+    const { id, provider = "bland" } = req.body;
 
     // Validate provider
     if (!["bland", "bolna"].includes(provider)) {
       return res.status(400).json({ ok: false, error: "Invalid provider. Must be 'bland' or 'bolna'" });
     }
 
-    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
-      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    if (!id) {
+      return res.status(400).json({ ok: false, error: "Missing id. Must provide lead id" });
     }
 
-    // Read the specific row
-    const row = await readRow(sheet_row);
+    // Read the specific lead
+    const row = await readRow(id);
+
+    if (!row) {
+      return res.status(404).json({ ok: false, error: "Lead not found" });
+    }
 
     if (!row.phone_e164 || !row.phone_e164.trim().startsWith("+")) {
-      return res.status(400).json({ ok: false, error: "Row missing valid phone_e164" });
+      return res.status(400).json({ ok: false, error: "Lead missing valid phone_e164" });
     }
 
     // Server-side lock: reject if already calling (allow recalling for testing)
     const currentStatus = (row.call_status || "").toLowerCase();
     if (currentStatus === "calling") {
-      return res.status(409).json({ 
-        ok: false, 
-        error: "Call already in progress. Please wait for it to complete." 
+      return res.status(409).json({
+        ok: false,
+        error: "Call already in progress. Please wait for it to complete."
       });
     }
-    
+
     // For testing: allow recalling completed/queued/failed calls
     // Only block if actively calling
 
-    const rowNumber = row.__rowNumber;
+    const leadId = row.id;
     const attempts = Number(row.call_attempts || 0) + 1;
 
     // Mark as calling with provider info
-    await updateRow(rowNumber, {
+    await updateRow(leadId, {
       call_status: "calling",
-      call_attempts: String(attempts),
+      call_attempts: attempts,
       last_call_at: new Date().toISOString(),
       call_provider: provider, // Track which provider is being used
     });
@@ -924,7 +817,7 @@ app.post("/trigger-call", async (req, res) => {
           property_name: row.property_name || "Tulip Monsella",
           lead_id: row.lead_id || "",
           property_id: row.property_id || "",
-          sheet_row: String(rowNumber), // Bolna expects strings in user_data
+          id: leadId, // Supabase UUID for webhook lookup
         };
 
         const bolnaResp = await startBolnaCall({
@@ -935,14 +828,14 @@ app.post("/trigger-call", async (req, res) => {
         callId = bolnaResp.execution_id || "";
         callResponse = bolnaResp;
 
-        // Save bolna_execution_id to sheet immediately so webhooks can find it
-        console.log(`Bolna: saving execution_id=${callId} to row ${rowNumber}`);
-        await updateRow(rowNumber, {
+        // Save bolna_execution_id to lead immediately so webhooks can find it
+        console.log(`Bolna: saving execution_id=${callId} to lead ${leadId}`);
+        await updateRow(leadId, {
           bolna_execution_id: callId,
         });
-        console.log(`Bolna: saved execution_id to sheet row ${rowNumber}`);
+        console.log(`Bolna: saved execution_id to lead ${leadId}`);
 
-        // Save to Supabase with bolna_execution_id
+        // Save to calls table for history
         await supabase.from("calls").insert({
           lead_id: row.lead_id || null,
           property_id: row.property_id || null,
@@ -961,11 +854,11 @@ app.post("/trigger-call", async (req, res) => {
         // -------------------- BLAND (English - default) --------------------
         const task = buildPromptFromRow(row);
 
-        // Metadata includes sheet_row for webhook -> update correct row
+        // Metadata includes id for webhook -> update correct lead
         const metadata = {
           lead_id: row.lead_id || "",
           property_id: row.property_id || "",
-          sheet_row: rowNumber,
+          id: leadId, // Supabase UUID
         };
 
         const blandResp = await startBlandCall({
@@ -979,12 +872,12 @@ app.post("/trigger-call", async (req, res) => {
         callId = blandResp.call_id || blandResp.id || "";
         callResponse = blandResp;
 
-        // Save bland_call_id
-        await updateRow(rowNumber, {
+        // Save bland_call_id to lead
+        await updateRow(leadId, {
           bland_call_id: callId,
         });
 
-        // Save to Supabase
+        // Save to calls table for history
         await supabase.from("calls").insert({
           lead_id: row.lead_id || null,
           property_id: row.property_id || null,
@@ -1004,13 +897,13 @@ app.post("/trigger-call", async (req, res) => {
         ok: true,
         call_id: callId,
         provider,
-        sheet_row: rowNumber,
+        id: leadId,
         message: `Call started successfully via ${provider}`,
       });
     } catch (err) {
       console.error(`Trigger call error (${provider}):`, err);
 
-      await updateRow(rowNumber, {
+      await updateRow(leadId, {
         call_status: "failed",
         outcome: "human_followup",
         next_action: "human_followup",
@@ -1081,9 +974,9 @@ function generateId(prefix) {
 
 /**
  * POST /add-row
- * Adds a new row to the Google Sheet.
+ * Adds a new lead to the database.
  * Input: { "data": { "phone_e164": "+1234567890", "property_address": "...", ... } }
- * Auto-generates: lead_id, property_id, call_status, call_attempts, created_at
+ * Auto-generates: lead_id, property_id, call_status, call_attempts
  */
 app.post("/add-row", async (req, res) => {
   try {
@@ -1093,26 +986,16 @@ app.post("/add-row", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid data. Expected { data: { ... } }" });
     }
 
-    // Auto-generate IDs and set defaults
-    const rowData = {
-      ...data,
-      lead_id: data.lead_id || generateId("lead"),
-      property_id: data.property_id || generateId("prop"),
-      call_status: data.call_status || "queued",
-      call_attempts: data.call_attempts || "0",
-      created_at: new Date().toISOString(),
-    };
+    // appendRow handles ID generation and defaults
+    const result = await appendRow(data);
 
-    const { rowNumber } = await appendRow(rowData);
-
-    console.log(`POST /add-row - added row at position ${rowNumber}, lead_id: ${rowData.lead_id}, property_id: ${rowData.property_id}`);
+    console.log(`POST /add-row - added lead id: ${result.id}, lead_id: ${result.lead_id}`);
 
     return res.json({
       ok: true,
-      message: "Row added successfully",
-      row_number: rowNumber,
-      lead_id: rowData.lead_id,
-      property_id: rowData.property_id,
+      message: "Lead added successfully",
+      id: result.id,
+      lead_id: result.lead_id,
     });
   } catch (err) {
     console.error("add-row failed:", err);
@@ -1218,34 +1101,22 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
         continue;
       }
 
-      // Build row data matching the sheet schema
+      // Build row data for Supabase
       const rowData = {
         lead_name: name.trim() || "",
         phone_e164: phoneE164,
         email: email.trim() || "",
         call_status: "queued",
-        call_attempts: "0",
-        created_at: new Date().toISOString(),
+        call_attempts: 0,
       };
-
-      // Auto-generate IDs
-      rowData.lead_id = generateId("lead");
-      rowData.property_id = generateId("prop");
-
-      // Fill in any other required headers with empty strings
-      headers.forEach(header => {
-        if (!(header in rowData)) {
-          rowData[header] = "";
-        }
-      });
 
       try {
         await appendRow(rowData);
         inserted++;
       } catch (appendError) {
         skipped++;
-        errors.push(`Row ${i + 2}: Failed to append - ${appendError.message}`);
-        console.error(`Failed to append row ${i + 2}:`, appendError);
+        errors.push(`Row ${i + 2}: Failed to insert - ${appendError.message}`);
+        console.error(`Failed to insert row ${i + 2}:`, appendError);
       }
     }
 
@@ -1265,30 +1136,30 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
 
 /**
  * PUT /update-row
- * Updates an existing row in the Google Sheet.
- * Input: { "sheet_row": 2, "data": { "phone_e164": "+1234567890", ... } }
+ * Updates an existing lead in the database.
+ * Input: { "id": "uuid-here", "data": { "phone_e164": "+1234567890", ... } }
  */
 app.put("/update-row", async (req, res) => {
   try {
-    const { sheet_row, data } = req.body;
+    const { id, data } = req.body;
 
-    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
-      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    if (!id) {
+      return res.status(400).json({ ok: false, error: "Missing id" });
     }
 
     if (!data || typeof data !== "object") {
       return res.status(400).json({ ok: false, error: "Invalid data. Expected { data: { ... } }" });
     }
 
-    // Update the row with provided data
-    await updateRow(sheet_row, data);
+    // Update the lead with provided data
+    await updateRow(id, data);
 
-    console.log(`PUT /update-row - updated row ${sheet_row}`);
+    console.log(`PUT /update-row - updated lead ${id}`);
 
     return res.json({
       ok: true,
-      message: "Row updated successfully",
-      row_number: sheet_row,
+      message: "Lead updated successfully",
+      id,
     });
   } catch (err) {
     console.error("update-row failed:", err);
@@ -1298,30 +1169,25 @@ app.put("/update-row", async (req, res) => {
 
 /**
  * DELETE /delete-row
- * Deletes a row from the Google Sheet.
- * Input: { "sheet_row": 2 }
+ * Deletes a lead from the database.
+ * Input: { "id": "uuid-here" }
  */
 app.delete("/delete-row", async (req, res) => {
   try {
-    const { sheet_row } = req.body;
+    const { id } = req.body;
 
-    if (!sheet_row || typeof sheet_row !== "number" || sheet_row < 2) {
-      return res.status(400).json({ ok: false, error: "Invalid sheet_row. Must be a number >= 2" });
+    if (!id) {
+      return res.status(400).json({ ok: false, error: "Missing id" });
     }
 
-    // Prevent deleting header row
-    if (sheet_row === 1) {
-      return res.status(400).json({ ok: false, error: "Cannot delete header row" });
-    }
+    await deleteRow(id);
 
-    await deleteRow(sheet_row);
-
-    console.log(`DELETE /delete-row - deleted row ${sheet_row}`);
+    console.log(`DELETE /delete-row - deleted lead ${id}`);
 
     return res.json({
       ok: true,
-      message: "Row deleted successfully",
-      row_number: sheet_row,
+      message: "Lead deleted successfully",
+      id,
     });
   } catch (err) {
     console.error("delete-row failed:", err);
@@ -1331,36 +1197,25 @@ app.delete("/delete-row", async (req, res) => {
 
 /**
  * DELETE /delete-rows-bulk
- * Deletes multiple rows from the Google Sheet.
- * Input: { "sheet_rows": [2, 3, 5] }
+ * Deletes multiple leads from the database.
+ * Input: { "ids": ["uuid-1", "uuid-2", ...] }
  */
 app.delete("/delete-rows-bulk", async (req, res) => {
   try {
-    const { sheet_rows } = req.body;
+    const { ids } = req.body;
 
-    if (!Array.isArray(sheet_rows) || sheet_rows.length === 0) {
-      return res.status(400).json({ ok: false, error: "Invalid sheet_rows. Must be a non-empty array of row numbers >= 2" });
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ ok: false, error: "Invalid ids. Must be a non-empty array" });
     }
 
-    // Validate all row numbers
-    const invalidRows = sheet_rows.filter(r => typeof r !== "number" || r < 2);
-    if (invalidRows.length > 0) {
-      return res.status(400).json({ ok: false, error: `Invalid row numbers: ${invalidRows.join(", ")}. All must be >= 2` });
-    }
+    await deleteRowsBulk(ids);
 
-    // Prevent deleting header row
-    if (sheet_rows.includes(1)) {
-      return res.status(400).json({ ok: false, error: "Cannot delete header row" });
-    }
-
-    await deleteRowsBulk(sheet_rows);
-
-    console.log(`DELETE /delete-rows-bulk - deleted ${sheet_rows.length} rows`);
+    console.log(`DELETE /delete-rows-bulk - deleted ${ids.length} leads`);
 
     return res.json({
       ok: true,
-      message: `${sheet_rows.length} row(s) deleted successfully`,
-      deleted_count: sheet_rows.length,
+      message: `${ids.length} lead(s) deleted successfully`,
+      deleted_count: ids.length,
     });
   } catch (err) {
     console.error("delete-rows-bulk failed:", err);
@@ -1408,18 +1263,17 @@ app.post("/run-dialer", async (req, res) => {
 
     // -------------------- BOLNA CALLS (Hinglish) --------------------
     // Bolna doesn't have a simple batch API like Bland, so we make individual calls
-    // For production scale, consider using Bolna's CSV batch upload API
     if (bolnaLeads.length > 0) {
       console.log(`Starting ${bolnaLeads.length} Bolna calls...`);
-      
+
       for (const row of bolnaLeads) {
         try {
           const attempts = Number(row.call_attempts || 0) + 1;
-          
+
           // Mark as calling
-          await updateRow(row.__rowNumber, {
+          await updateRow(row.id, {
             call_status: "calling",
-            call_attempts: String(attempts),
+            call_attempts: attempts,
             last_call_at: startedAt,
             call_provider: "bolna",
           });
@@ -1431,7 +1285,7 @@ app.post("/run-dialer", async (req, res) => {
             property_name: row.property_name || "Tulip Monsella",
             lead_id: row.lead_id || "",
             property_id: row.property_id || "",
-            sheet_row: String(row.__rowNumber),
+            id: row.id, // Supabase UUID for webhook lookup
           };
 
           const bolnaResp = await startBolnaCall({
@@ -1441,12 +1295,12 @@ app.post("/run-dialer", async (req, res) => {
 
           const executionId = bolnaResp.execution_id || "";
 
-          // Save execution_id to sheet
-          await updateRow(row.__rowNumber, {
+          // Save execution_id to lead
+          await updateRow(row.id, {
             bolna_execution_id: executionId,
           });
 
-          // Save to Supabase
+          // Save to calls table for history
           await supabase.from("calls").insert({
             lead_id: row.lead_id || null,
             property_id: row.property_id || null,
@@ -1464,9 +1318,9 @@ app.post("/run-dialer", async (req, res) => {
           bolnaSuccessCount++;
         } catch (bolnaErr) {
           console.error(`Bolna call failed for ${row.phone_e164}:`, bolnaErr);
-          
+
           // Mark as failed
-          await updateRow(row.__rowNumber, {
+          await updateRow(row.id, {
             call_status: "failed",
             notes: `Bolna call failed: ${String(bolnaErr.message || bolnaErr)}`,
           });
@@ -1488,30 +1342,27 @@ app.post("/run-dialer", async (req, res) => {
           metadata: {
             lead_id: row.lead_id,
             property_id: row.property_id,
-            sheet_row: row.__rowNumber,
+            id: row.id, // Supabase UUID
           }
         };
       });
 
-      // Prepare Sheet Updates (mark as calling)
-      const blandSheetUpdates = blandLeads.map(row => {
+      // Update leads to mark as calling
+      for (const row of blandLeads) {
         const attempts = Number(row.call_attempts || 0) + 1;
-        return {
-          rowNumber: row.__rowNumber,
-          values: {
-            call_status: "calling",
-            call_attempts: String(attempts),
-            last_call_at: startedAt,
-            call_provider: "bland",
-          }
-        };
-      });
+        await updateRow(row.id, {
+          call_status: "calling",
+          call_attempts: attempts,
+          last_call_at: startedAt,
+          call_provider: "bland",
+        });
+      }
 
       // Send Batch to Bland
       console.log(`Triggering Bland Batch for ${blandLeads.length} numbers`);
-      
+
       const globalTask = callObjects.length > 0 ? callObjects[0].task : buildPromptFromRow(blandLeads[0]);
-      
+
       const batchPayload = {
         call_objects: callObjects,
         global: {
@@ -1544,9 +1395,6 @@ app.post("/run-dialer", async (req, res) => {
       const blandResult = await blandResp.json();
       console.log("Bland Batch created:", blandResult);
       blandBatchId = blandResult.data?.batch_id;
-
-      // Update Sheets in Batch
-      await updateRowsBatch(blandSheetUpdates);
     }
 
     return res.json({
@@ -1584,7 +1432,7 @@ app.post("/webhooks/bland", async (req, res) => {
     const meta = payload.metadata || {};
     const leadId = meta.lead_id || "";
     const propertyId = meta.property_id || "";
-    const rowNumber = meta.sheet_row || null;
+    const supabaseId = meta.id || null; // Supabase UUID
 
     // Extract Bland's disposition_tag if available (Bland's own classification)
     const dispositionTag = payload.disposition_tag || null;
@@ -1599,8 +1447,6 @@ app.post("/webhooks/bland", async (req, res) => {
     });
 
     // Determine call_status based on outcome
-    // Use outcome directly for: opt_out, no_answer, voicemail
-    // Use "completed" for outcomes that mean the call connected: interested, human_followup
     const callStatusMap = {
       "opt_out": "opt_out",
       "no_answer": "no_answer",
@@ -1610,11 +1456,20 @@ app.post("/webhooks/bland", async (req, res) => {
     };
     const callStatus = callStatusMap[outcome] || "completed";
 
-    console.log(`Webhook received: call_id=${callId}, answered_by=${answeredBy}, outcome=${outcome}, call_status=${callStatus}`);
+    console.log(`Bland webhook: call_id=${callId}, answered_by=${answeredBy}, outcome=${outcome}, call_status=${callStatus}`);
 
-    // Update sheet row
-    if (rowNumber) {
-      await updateRow(rowNumber, {
+    // Find lead by id from metadata, or by bland_call_id
+    let lead = null;
+    if (supabaseId) {
+      lead = await readRow(supabaseId).catch(() => null);
+    }
+    if (!lead) {
+      lead = await findLeadByBlandCallId(callId);
+    }
+
+    // Update lead if found
+    if (lead) {
+      await updateRow(lead.id, {
         call_status: callStatus,
         outcome,
         next_action,
@@ -1622,11 +1477,13 @@ app.post("/webhooks/bland", async (req, res) => {
         last_call_at: new Date().toISOString(),
         recording_url: recordingUrl,
         transcript: transcript,
-        notes: summary,
+        summary: summary,
       });
+    } else {
+      console.log(`Bland webhook: Could not find lead for call_id=${callId}`);
     }
 
-    // Upsert supabase call record by bland_call_id
+    // Upsert calls table for history
     await supabase
       .from("calls")
       .upsert(
@@ -1648,26 +1505,11 @@ app.post("/webhooks/bland", async (req, res) => {
       );
 
     // WhatsApp Hot Lead Alert: fire only when outcome is "interested"
-    if (outcome === "interested") {
-      // Get lead details for the alert (read from sheet if we have row number)
-      let leadName = "";
-      let propertyName = "Tulip Monsella"; // Default project name
-      
-      if (rowNumber) {
-        try {
-          const rowData = await readRow(rowNumber);
-          leadName = rowData.lead_name || "";
-          propertyName = rowData.property_name || rowData.property_address || "Tulip Monsella";
-        } catch (readErr) {
-          // Ignore read errors - use defaults
-        }
-      }
-      
-      // Send WhatsApp notification (non-blocking, fails silently)
+    if (outcome === "interested" && lead) {
       sendWhatsAppHotLeadAlert({
-        leadName,
+        leadName: lead.lead_name || "",
         phoneE164: payload.to || payload.phone_number || "",
-        propertyName,
+        propertyName: lead.property_name || lead.property_address || "Tulip Monsella",
         callSummary: summary,
       });
     }
@@ -1685,14 +1527,12 @@ app.post("/webhooks/bland", async (req, res) => {
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
-    // Skip Zod validation entirely - Zod v4 has bugs with safeParse throwing exceptions
-    // Just use raw body with safe property access
+    // Skip Zod validation - use raw body with safe property access
     const payload = req.body || {};
-    
-    // Log the raw payload for debugging
-    console.log("Bolna webhook received payload:", JSON.stringify(payload).slice(0, 500));
 
-    // Extract fields - Bolna uses different field names than Bland
+    console.log("Bolna webhook received:", JSON.stringify(payload).slice(0, 500));
+
+    // Extract fields
     const executionId = payload.execution_id || payload.id || "";
     const status = payload.status || "unknown";
     const transcript = payload.transcript || "";
@@ -1703,40 +1543,25 @@ app.post("/webhooks/bolna", async (req, res) => {
     const hangupReason = telephonyData.hangup_reason || "";
 
     // Extract context_details which contains our user_data variables
-    // Note: Bolna may return user_data directly or under context_details depending on API version
     const contextDetails = payload.context_details || payload.user_data || {};
     const leadId = contextDetails.lead_id || "";
     const propertyId = contextDetails.property_id || "";
-    
-    // Try to get row number from context_details first
-    let rowNumber = contextDetails.sheet_row ? Number(contextDetails.sheet_row) : null;
-    
-    // Fallback: if no sheet_row in context, look up by bolna_execution_id in the sheet
-    if (!rowNumber && executionId) {
-      try {
-        const { headers, rows } = await readAllRows();
-        
-        // Debug: check if column exists and log existing values
-        const hasColumn = headers.includes("bolna_execution_id");
-        const existingIds = rows.map(r => ({ row: r.__rowNumber, id: r.bolna_execution_id || "(empty)" })).filter(r => r.id !== "(empty)");
-        console.log(`Bolna webhook lookup: column exists=${hasColumn}, looking for=${executionId}, existing ids=${JSON.stringify(existingIds)}`);
-        
-        const matchingRow = rows.find(r => r.bolna_execution_id === executionId);
-        if (matchingRow) {
-          rowNumber = matchingRow.__rowNumber;
-          console.log(`Bolna webhook: resolved row ${rowNumber} by bolna_execution_id lookup`);
-        }
-      } catch (lookupErr) {
-        console.error(`Bolna webhook: failed to lookup row by bolna_execution_id: ${lookupErr.message}`);
-      }
+    const supabaseId = contextDetails.id || null; // Supabase UUID
+
+    // Find lead by id from context, or by bolna_execution_id
+    let lead = null;
+    if (supabaseId) {
+      lead = await readRow(supabaseId).catch(() => null);
     }
-    
-    // Log warning if we still can't find the row
-    if (!rowNumber) {
-      console.warn(`Bolna webhook: no sheet row resolved (execution_id=${executionId}). Ensure bolna_execution_id column exists and was set when call started. Sheet will not be updated.`);
+    if (!lead && executionId) {
+      lead = await findLeadByBolnaExecutionId(executionId);
     }
 
-    // Map Bolna status to answered_by for classifyOutcome compatibility
+    if (!lead) {
+      console.warn(`Bolna webhook: no lead found (execution_id=${executionId})`);
+    }
+
+    // Map Bolna status to answered_by for classifyOutcome
     let answeredBy = "unknown";
     if (answeredByVoicemail) {
       answeredBy = "voicemail";
@@ -1746,31 +1571,27 @@ app.post("/webhooks/bolna", async (req, res) => {
       answeredBy = "no_answer";
     }
 
-    // Use our existing classifyOutcome function
+    // Use classifyOutcome function
     const { outcome, next_action } = classifyOutcome({
       answeredBy,
-      summary: "", // Bolna doesn't provide summary in the same way
+      summary: "",
       transcript,
       completed: status === "completed",
       callLength: durationSec,
-      dispositionTag: null, // Bolna uses extracted_data instead
+      dispositionTag: null,
     });
 
     // Override outcome based on Bolna-specific status
     let finalOutcome = outcome;
     let finalNextAction = next_action;
-    
-    if (status === "no-answer") {
-      finalOutcome = "no_answer";
-      finalNextAction = "call_back_later";
-    } else if (status === "busy") {
+
+    if (status === "no-answer" || status === "busy") {
       finalOutcome = "no_answer";
       finalNextAction = "call_back_later";
     } else if (answeredByVoicemail) {
       finalOutcome = "voicemail";
       finalNextAction = "call_back_later";
     } else if ((status === "completed" || status === "call-disconnected") && transcript && finalOutcome === "human_followup") {
-      // For Bolna: if call completed with conversation, treat as interested
       finalOutcome = "interested";
       finalNextAction = "human_followup";
     }
@@ -1785,11 +1606,11 @@ app.post("/webhooks/bolna", async (req, res) => {
     };
     const callStatus = callStatusMap[finalOutcome] || "completed";
 
-    console.log(`Bolna webhook received: execution_id=${executionId}, status=${status}, outcome=${finalOutcome}, call_status=${callStatus}`);
+    console.log(`Bolna webhook: execution_id=${executionId}, status=${status}, outcome=${finalOutcome}`);
 
-    // Update sheet row
-    if (rowNumber) {
-      await updateRow(rowNumber, {
+    // Update lead if found
+    if (lead) {
+      await updateRow(lead.id, {
         call_status: callStatus,
         outcome: finalOutcome,
         next_action: finalNextAction,
@@ -1801,7 +1622,7 @@ app.post("/webhooks/bolna", async (req, res) => {
       });
     }
 
-    // Upsert supabase call record by bolna_execution_id
+    // Upsert calls table for history
     await supabase
       .from("calls")
       .upsert(
@@ -1809,7 +1630,7 @@ app.post("/webhooks/bolna", async (req, res) => {
           bolna_execution_id: executionId,
           lead_id: leadId || null,
           property_id: propertyId || null,
-          phone_e164: payload.telephony_data?.to_number || null,
+          phone_e164: telephonyData.to_number || null,
           call_provider: "bolna",
           status,
           outcome: finalOutcome,
@@ -1823,27 +1644,12 @@ app.post("/webhooks/bolna", async (req, res) => {
         { onConflict: "bolna_execution_id" }
       );
 
-    // WhatsApp Hot Lead Alert: fire only when outcome is "interested"
-    if (finalOutcome === "interested") {
-      let leadName = "";
-      let propertyName = contextDetails.property_name || "Tulip Monsella";
-      
-      if (rowNumber) {
-        try {
-          const rowData = await readRow(rowNumber);
-          leadName = rowData.lead_name || contextDetails.lead_name || "";
-          propertyName = rowData.property_name || rowData.property_address || propertyName;
-        } catch (readErr) {
-          // Ignore read errors - use defaults
-          leadName = contextDetails.lead_name || "";
-        }
-      }
-      
-      // Send WhatsApp notification (non-blocking, fails silently)
+    // WhatsApp Hot Lead Alert
+    if (finalOutcome === "interested" && lead) {
       sendWhatsAppHotLeadAlert({
-        leadName,
-        phoneE164: payload.telephony_data?.to_number || "",
-        propertyName,
+        leadName: lead.lead_name || contextDetails.lead_name || "",
+        phoneE164: telephonyData.to_number || "",
+        propertyName: lead.property_name || contextDetails.property_name || "Tulip Monsella",
         callSummary: `Bolna Hinglish call - Lead showed interest. Duration: ${durationSec || 0}s`,
       });
     }

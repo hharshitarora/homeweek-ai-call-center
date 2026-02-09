@@ -564,8 +564,8 @@
     let filteredRecords = [];
     let currentSort = { field: 'created_at', dir: 'desc' };
     let currentFilter = { text: '', status: '', outcome: '' };
-    let selectedRecordId = null; // Use rowNumber as ID
-    let selectedRows = new Set(); // For bulk selection
+    let selectedRecordId = null; // Use Supabase id
+    let selectedRows = new Set(); // For bulk selection (stores ids)
     let isEditing = false;
     let isAdding = false;
 
@@ -690,24 +690,24 @@
       }
 
       tbody.innerHTML = filteredRecords.map(r => {
-        const rowNum = r.__rowNumber;
+        const recordId = r.id;
         const status = r.call_status || 'queued';
         const outcome = r.outcome || '';
         const outcomeLabel = OUTCOME_LABELS[outcome] || outcome || '—';
-        const isSelected = selectedRecordId === rowNum;
+        const isSelected = selectedRecordId === recordId;
 
         // Status badge
         const statusBadge = `<span class="badge status-${status}"><span class="badge-dot"></span>${status}</span>`;
-        
+
         // Outcome badge
         const outcomeBadge = outcome ? `<span class="badge outcome-${outcome}">${outcomeLabel}</span>` : '—';
 
-        const isRowSelected = selectedRows.has(rowNum);
-        
+        const isRowSelected = selectedRows.has(recordId);
+
         return `
-          <tr class="${isSelected ? 'selected' : ''} ${isRowSelected ? 'row-selected' : ''}" onclick="openDrawer(${rowNum})">
+          <tr class="${isSelected ? 'selected' : ''} ${isRowSelected ? 'row-selected' : ''}" onclick="openDrawer('${recordId}')">
             <td onclick="event.stopPropagation();">
-              <input type="checkbox" class="row-checkbox" data-row="${rowNum}" ${isRowSelected ? 'checked' : ''} onchange="toggleRowSelection(${rowNum}, event)">
+              <input type="checkbox" class="row-checkbox" data-row="${recordId}" ${isRowSelected ? 'checked' : ''} onchange="toggleRowSelection('${recordId}', event)">
             </td>
             <td class="col-name">
               <div style="font-weight:600">${r.lead_name || 'Untitled'}</div>
@@ -718,7 +718,7 @@
             <td class="col-date">${formatDate(r.last_call_at)}</td>
             <td class="col-notes">${r.notes || r.summary || ''}</td>
             <td class="col-actions">
-              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); openDrawer(${rowNum})">View</button>
+              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); openDrawer('${recordId}')">View</button>
             </td>
           </tr>
         `;
@@ -813,14 +813,14 @@
           ${!editing && !adding ? `
             <div style="padding: 20px 24px 0; display:flex; flex-direction:column; gap:10px;">
               <div style="display:flex; gap:8px;">
-                <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber}, 'bland')">
+                <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall('${record.id}', 'bland')">
                   ${record.call_status === 'calling' ? 'Calling...' : '🇺🇸 Call (English)'}
                 </button>
-                <button type="button" class="btn btn-call" style="flex:1; background: linear-gradient(135deg, #ff9500 0%, #ff6b00 100%);" ${!canCall ? 'disabled' : ''} onclick="triggerCall(${record.__rowNumber}, 'bolna')">
+                <button type="button" class="btn btn-call" style="flex:1; background: linear-gradient(135deg, #ff9500 0%, #ff6b00 100%);" ${!canCall ? 'disabled' : ''} onclick="triggerCall('${record.id}', 'bolna')">
                   ${record.call_status === 'calling' ? 'Calling...' : '🇮🇳 Call (Hinglish)'}
                 </button>
               </div>
-              <button type="button" class="btn btn-secondary" onclick="openDrawer(${record.__rowNumber}, true)">Edit</button>
+              <button type="button" class="btn btn-secondary" onclick="openDrawer('${record.id}', true)">Edit</button>
             </div>
           ` : ''}
 
@@ -839,16 +839,16 @@
 
           ${!adding && !editing ? `
             <div class="form-section" style="margin-top:20px;">
-               <button type="button" class="btn btn-destructive btn-sm" onclick="handleDelete(${record.__rowNumber})">Delete Lead</button>
+               <button type="button" class="btn btn-destructive btn-sm" onclick="handleDelete('${record.id}')">Delete Lead</button>
             </div>
           ` : ''}
-          
+
           <div style="height: 40px;"></div>
         </form>
 
         ${editing || adding ? `
           <div class="drawer-footer">
-            <button class="btn btn-secondary" onclick="${adding ? 'closeDrawer()' : `openDrawer(${record.__rowNumber})`}">Cancel</button>
+            <button class="btn btn-secondary" onclick="${adding ? 'closeDrawer()' : `openDrawer('${record.id}')`}">Cancel</button>
             <button class="btn btn-primary" onclick="document.getElementById('drawerForm').dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}))">Save Changes</button>
           </div>
         ` : ''}
@@ -857,30 +857,30 @@
 
     // --- Actions ---
 
-    function openDrawer(rowNumber, editing = false) {
+    function openDrawer(id, editing = false) {
       isAdding = false;
       isEditing = editing;
-      selectedRecordId = rowNumber;
-      
-      const record = allRecords.find(r => r.__rowNumber === rowNumber);
+      selectedRecordId = id;
+
+      const record = allRecords.find(r => r.id === id);
       if (!record) return;
 
       renderDrawer(record, editing, false);
-      
+
       document.getElementById('drawer').classList.add('open');
       document.getElementById('drawerOverlay').classList.add('open');
-      
+
       // Update table highlight
-      renderTable(); 
+      renderTable();
     }
 
     function openAddDrawer() {
       isAdding = true;
       isEditing = true;
       selectedRecordId = null;
-      
+
       renderDrawer({}, true, true);
-      
+
       document.getElementById('drawer').classList.add('open');
       document.getElementById('drawerOverlay').classList.add('open');
     }
@@ -894,7 +894,7 @@
 
     async function handleFormSubmit(e) {
       e.preventDefault();
-      
+
       const formData = new FormData(e.target);
       const data = {};
       formData.forEach((value, key) => {
@@ -910,10 +910,10 @@
         return;
       }
 
-      const rowNumber = isAdding ? null : selectedRecordId;
+      const recordId = isAdding ? null : selectedRecordId;
       const endpoint = isAdding ? '/add-row' : '/update-row';
       const method = isAdding ? 'POST' : 'PUT';
-      const payload = isAdding ? { data } : { sheet_row: rowNumber, data };
+      const payload = isAdding ? { data } : { id: recordId, data };
 
       try {
         const res = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -921,31 +921,31 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        
+
         const resData = await res.json();
         if (!resData.ok) throw new Error(resData.error);
-        
+
         showToast(isAdding ? 'Lead Added' : 'Saved Successfully');
         await loadData(); // Reload data
-        
+
         if (isAdding) closeDrawer();
-        else openDrawer(rowNumber, false); // Switch back to view mode
-        
+        else openDrawer(recordId, false); // Switch back to view mode
+
       } catch (err) {
         showToast(err.message || 'Failed to save', true);
       }
     }
 
-    async function triggerCall(rowNumber, provider = 'bland') {
+    async function triggerCall(id, provider = 'bland') {
       try {
         const providerLabel = provider === 'bolna' ? 'Hinglish' : 'English';
-        
+
         const res = await fetch(`${API_BASE_URL}/trigger-call`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheet_row: rowNumber, provider })
+          body: JSON.stringify({ id, provider })
         });
-        
+
         const data = await res.json();
         
         if (res.status === 409) {
@@ -955,10 +955,10 @@
         } else {
           showToast(`Calling via ${providerLabel}...`);
         }
-        
+
         await loadData();
         // Refresh drawer if open
-        if (selectedRecordId === rowNumber) openDrawer(rowNumber, false);
+        if (selectedRecordId === id) openDrawer(id, false);
       } catch (e) {
         const isNetworkError = e.message === 'Failed to fetch' || e.name === 'TypeError';
         const msg = isLocalhost && isNetworkError
@@ -967,18 +967,18 @@
         showToast(msg, true);
       }
     }
-    
-    async function handleDelete(rowNumber) {
+
+    async function handleDelete(id) {
       if(!confirm('Delete this lead?')) return;
       try {
         const res = await fetch(`${API_BASE_URL}/delete-row`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheet_row: rowNumber })
+          body: JSON.stringify({ id })
         });
         const d = await res.json();
         if(!d.ok) throw new Error(d.error);
-        
+
         showToast('Lead deleted');
         closeDrawer();
         loadData();
@@ -1065,49 +1065,49 @@
     }
 
     // --- Bulk Selection ---
-    function toggleRowSelection(rowNum, event) {
+    function toggleRowSelection(id, event) {
       if (event) event.stopPropagation();
-      
-      if (selectedRows.has(rowNum)) {
-        selectedRows.delete(rowNum);
+
+      if (selectedRows.has(id)) {
+        selectedRows.delete(id);
       } else {
-        selectedRows.add(rowNum);
+        selectedRows.add(id);
       }
-      
+
       updateBulkDeleteButton();
       updateSelectAllCheckbox();
     }
 
     function toggleSelectAll(event) {
       if (event) event.stopPropagation();
-      
+
       const checkbox = document.getElementById('selectAllCheckbox');
       const isChecked = checkbox.checked;
-      
+
       if (isChecked) {
         // Select all visible rows
-        filteredRecords.forEach(r => selectedRows.add(r.__rowNumber));
+        filteredRecords.forEach(r => selectedRows.add(r.id));
       } else {
         // Deselect all
         selectedRows.clear();
       }
-      
+
       // Update all checkboxes
       document.querySelectorAll('.row-checkbox').forEach(cb => {
         cb.checked = isChecked;
       });
-      
+
       updateBulkDeleteButton();
     }
 
     function updateSelectAllCheckbox() {
       const checkbox = document.getElementById('selectAllCheckbox');
       if (!checkbox) return;
-      
-      const allSelected = filteredRecords.length > 0 && 
-        filteredRecords.every(r => selectedRows.has(r.__rowNumber));
-      const someSelected = filteredRecords.some(r => selectedRows.has(r.__rowNumber));
-      
+
+      const allSelected = filteredRecords.length > 0 &&
+        filteredRecords.every(r => selectedRows.has(r.id));
+      const someSelected = filteredRecords.some(r => selectedRows.has(r.id));
+
       checkbox.checked = allSelected;
       checkbox.indeterminate = someSelected && !allSelected;
     }
@@ -1115,7 +1115,7 @@
     function updateBulkDeleteButton() {
       const btn = document.getElementById('bulkDeleteBtn');
       const countSpan = document.getElementById('selectedCount');
-      
+
       if (selectedRows.size > 0) {
         btn.style.display = 'inline-flex';
         countSpan.textContent = selectedRows.size;
@@ -1127,31 +1127,31 @@
     async function handleBulkDelete() {
       const count = selectedRows.size;
       if (count === 0) return;
-      
+
       if (!confirm(`Are you sure you want to delete ${count} lead(s)? This action cannot be undone.`)) {
         return;
       }
 
       try {
-        const rowNumbers = Array.from(selectedRows);
+        const ids = Array.from(selectedRows);
         showToast(`Deleting ${count} lead(s)...`);
-        
+
         const res = await fetch(`${API_BASE_URL}/delete-rows-bulk`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheet_rows: rowNumbers })
+          body: JSON.stringify({ ids })
         });
-        
+
         const data = await res.json();
-        
+
         if (!data.ok) throw new Error(data.error);
-        
+
         showToast(`${count} lead(s) deleted successfully`);
         selectedRows.clear();
         updateBulkDeleteButton();
         updateSelectAllCheckbox();
         await loadData();
-        
+
       } catch (e) {
         showToast(e.message || 'Bulk delete failed', true);
         console.error(e);
@@ -1160,9 +1160,9 @@
 
     // --- Init ---
     loadData();
-    
-    // Auto refresh every 30s to keep statuses updated
-    setInterval(loadData, 30000);
+
+    // No automatic polling - refresh only on user actions
+    // Use the Refresh button to manually update data
 
   </script>
 </body>
