@@ -757,6 +757,7 @@ app.get("/", (req, res) => {
  */
 app.post("/trigger-call", async (req, res) => {
   try {
+    console.log("trigger-call received body:", JSON.stringify(req.body));
     const { id, provider = "bland" } = req.body;
 
     // Validate provider
