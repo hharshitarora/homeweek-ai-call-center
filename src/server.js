@@ -1468,8 +1468,13 @@ app.post("/webhooks/bland", async (req, res) => {
       lead = await findLeadByBlandCallId(callId);
     }
 
-    // Update lead if found
-    if (lead) {
+    // Update lead if found. Do not overwrite a completed lead with a late no_answer from Bland
+    // (e.g. user triggered Bland then Bolna; Bolna completed first, Bland webhook arrives later).
+    const leadAlreadyCompleted = lead && String(lead.call_status || "").toLowerCase() === "completed";
+    const blandSaysNoAnswer = callStatus === "no_answer";
+    const skipLeadUpdate = leadAlreadyCompleted && blandSaysNoAnswer;
+
+    if (lead && !skipLeadUpdate) {
       await updateRow(lead.id, {
         call_status: callStatus,
         outcome,
@@ -1480,7 +1485,9 @@ app.post("/webhooks/bland", async (req, res) => {
         transcript: transcript,
         summary: summary,
       });
-    } else {
+    } else if (skipLeadUpdate) {
+      console.log(`Bland webhook: skipping lead update (lead already completed, Bland late no_answer for call_id=${callId})`);
+    } else if (!lead) {
       console.log(`Bland webhook: Could not find lead for call_id=${callId}`);
     }
 
@@ -1522,9 +1529,13 @@ app.post("/webhooks/bland", async (req, res) => {
   }
 });
 
+// Bolna sends a webhook on every status change (initiated → ringing → in-progress → call-disconnected → completed).
+// Only terminal statuses represent the final outcome; transient statuses must not update lead/notes/outcome.
+const BOLNA_TERMINAL_STATUSES = ["completed", "call-disconnected", "no-answer", "busy", "failed", "canceled", "balance-low"];
+
 /**
  * POST /webhooks/bolna
- * Bolna sends call results here after completion.
+ * Bolna sends call status updates here. We only update lead, notes, and outcome on terminal status.
  */
 app.post("/webhooks/bolna", async (req, res) => {
   try {
@@ -1538,7 +1549,7 @@ app.post("/webhooks/bolna", async (req, res) => {
     const status = payload.status || "unknown";
     const transcript = payload.transcript || "";
     const telephonyData = payload.telephony_data || {};
-    const durationSec = telephonyData.duration || payload.conversation_time || null;
+    const durationSec = telephonyData.duration ?? payload.conversation_time ?? payload.conversation_duration ?? null;
     const recordingUrl = telephonyData.recording_url || "";
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
     const hangupReason = telephonyData.hangup_reason || "";
@@ -1548,6 +1559,13 @@ app.post("/webhooks/bolna", async (req, res) => {
     const leadId = contextDetails.lead_id || "";
     const propertyId = contextDetails.property_id || "";
     const supabaseId = contextDetails.id || null; // Supabase UUID
+
+    const isTerminal = BOLNA_TERMINAL_STATUSES.includes(status);
+
+    if (!isTerminal) {
+      console.log(`Bolna webhook: execution_id=${executionId}, status=${status} (transient, skipping lead/calls update)`);
+      return res.status(200).send("ok");
+    }
 
     // Find lead by id from context, or by bolna_execution_id
     let lead = null;
@@ -1609,7 +1627,7 @@ app.post("/webhooks/bolna", async (req, res) => {
 
     console.log(`Bolna webhook: execution_id=${executionId}, status=${status}, outcome=${finalOutcome}`);
 
-    // Update lead if found
+    // Update lead only on terminal status
     if (lead) {
       await updateRow(lead.id, {
         call_status: callStatus,
@@ -1623,20 +1641,20 @@ app.post("/webhooks/bolna", async (req, res) => {
       });
     }
 
-    // Upsert calls table for history
+    // Upsert calls table for history (only on terminal so we store final outcome)
     await supabase
       .from("calls")
       .upsert(
         {
           bolna_execution_id: executionId,
-          lead_id: leadId || null,
-          property_id: propertyId || null,
-          phone_e164: telephonyData.to_number || null,
+          lead_id: leadId || (lead?.lead_id) || null,
+          property_id: propertyId || (lead?.property_id) || null,
+          phone_e164: telephonyData.to_number || (lead?.phone_e164) || null,
           call_provider: "bolna",
           status,
           outcome: finalOutcome,
           next_action: finalNextAction,
-          duration_sec: durationSec,
+          duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
           transcript,
           recording_url: recordingUrl,
           raw_webhook: req.body,
@@ -1645,13 +1663,13 @@ app.post("/webhooks/bolna", async (req, res) => {
         { onConflict: "bolna_execution_id" }
       );
 
-    // WhatsApp Hot Lead Alert
+    // WhatsApp Hot Lead Alert (only on terminal with interested)
     if (finalOutcome === "interested" && lead) {
       sendWhatsAppHotLeadAlert({
         leadName: lead.lead_name || contextDetails.lead_name || "",
-        phoneE164: telephonyData.to_number || "",
+        phoneE164: telephonyData.to_number || lead.phone_e164 || "",
         propertyName: lead.property_name || contextDetails.property_name || "Tulip Monsella",
-        callSummary: `Bolna Hinglish call - Lead showed interest. Duration: ${durationSec || 0}s`,
+        callSummary: `Bolna Hinglish call - Lead showed interest. Duration: ${durationSec ?? 0}s`,
       });
     }
 
