@@ -950,10 +950,11 @@ app.post("/auth/login", (req, res) => {
   }
   const payload = { user: key, exp: Date.now() + SESSION_MAX_AGE_MS };
   const token = signSession(payload);
+  const isProduction = process.env.NODE_ENV === "production";
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
     maxAge: SESSION_MAX_AGE_MS / 1000,
     path: "/",
   });
@@ -1012,10 +1013,11 @@ app.post("/auth/verify-otp", async (req, res) => {
   }
   const payload = { user: key, exp: Date.now() + SESSION_MAX_AGE_MS };
   const token = signSession(payload);
+  const isProduction = process.env.NODE_ENV === "production";
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
     maxAge: SESSION_MAX_AGE_MS / 1000,
     path: "/",
   });
