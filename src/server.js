@@ -1068,11 +1068,8 @@ app.post("/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-// Middleware: require auth for protected paths when auth is enabled
-app.use((req, res, next) => {
-  if (AUTH_ENABLED && isProtectedPath(req.path)) return requireAuth(req, res, next);
-  next();
-});
+// Auth is only used for the login screen (frontend shows app after login).
+// No server-side auth on API routes — /rows, /trigger-call, /run-dialer, etc. are open once you're in.
 
 /**
  * POST /trigger-call
