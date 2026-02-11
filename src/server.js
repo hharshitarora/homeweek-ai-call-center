@@ -182,25 +182,29 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// -------------------- Auth (Email OTP) --------------------
-// Optional: when LOGIN_USERNAME, LOGIN_EMAIL(S), SESSION_SECRET + (Resend OR Gmail) are set, protect app with OTP login
-// LOGIN_EMAIL can be a single address or comma-separated (e.g. "you@x.com,dad@x.com") — OTP is sent to all
-// Email sending: use Gmail SMTP (no domain needed) or Resend. Gmail = GMAIL_USER + GMAIL_APP_PASSWORD.
+// -------------------- Auth --------------------
+// Static password: set LOGIN_USERNAME + LOGIN_PASSWORD + SESSION_SECRET (no email needed).
+// Or email OTP: LOGIN_USERNAME + LOGIN_EMAIL(S) + SESSION_SECRET + (Resend | Gmail | SendGrid).
 const LOGIN_USERNAME = (process.env.LOGIN_USERNAME || "").trim();
+const LOGIN_PASSWORD = process.env.LOGIN_PASSWORD; // plain; set for static password login
 const LOGIN_EMAIL_RAW = (process.env.LOGIN_EMAIL || "").trim();
 const LOGIN_EMAILS = LOGIN_EMAIL_RAW ? LOGIN_EMAIL_RAW.split(",").map((e) => e.trim()).filter(Boolean) : [];
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = (process.env.RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>").trim();
 const GMAIL_USER = (process.env.GMAIL_USER || "").trim();
 const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+const SENDGRID_FROM = (process.env.SENDGRID_FROM || "").trim();
 const SESSION_SECRET = process.env.SESSION_SECRET;
-const EMAIL_SENDER_OK = !!(RESEND_API_KEY || (GMAIL_USER && GMAIL_APP_PASSWORD));
-const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK && SESSION_SECRET);
+const EMAIL_SENDER_OK = !!(RESEND_API_KEY || (GMAIL_USER && GMAIL_APP_PASSWORD) || (SENDGRID_API_KEY && SENDGRID_FROM));
+const PASSWORD_AUTH = !!(LOGIN_USERNAME && LOGIN_PASSWORD && SESSION_SECRET);
+const OTP_AUTH = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK && SESSION_SECRET);
+const AUTH_ENABLED = !!(LOGIN_USERNAME && SESSION_SECRET && (LOGIN_PASSWORD || (LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK)));
 
 if (AUTH_ENABLED) {
-  console.log("🔐 Auth enabled: OTP login (emails:", LOGIN_EMAILS.length, ", sender:", GMAIL_USER ? "Gmail" : "Resend", ")");
+  console.log("🔐 Auth enabled:", PASSWORD_AUTH ? "static password" : "OTP (email)");
 } else {
-  console.log("🔓 Auth disabled: set LOGIN_USERNAME, LOGIN_EMAIL, SESSION_SECRET, and either RESEND_API_KEY or (GMAIL_USER + GMAIL_APP_PASSWORD)");
+  console.log("🔓 Auth disabled: set LOGIN_USERNAME, SESSION_SECRET, and either LOGIN_PASSWORD or (LOGIN_EMAIL + email sender)");
 }
 
 let gmailTransporter = null;
@@ -208,6 +212,8 @@ if (GMAIL_USER && GMAIL_APP_PASSWORD) {
   gmailTransporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
   });
 }
 
@@ -256,13 +262,44 @@ const OTP_HTML = (otp) =>
   `<p>Your one-time login code is: <strong>${otp}</strong></p><p>It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`;
 
 async function sendOtpEmail(to, otp) {
-  if (gmailTransporter) {
-    await gmailTransporter.sendMail({
-      from: GMAIL_USER,
-      to,
-      subject: "Your Homeseek Command Center login code",
-      html: OTP_HTML(otp),
+  if (SENDGRID_API_KEY && SENDGRID_FROM) {
+    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${SENDGRID_API_KEY}`,
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: (() => {
+        const m = SENDGRID_FROM.match(/^(.+?)\s*<([^>]+)>$/);
+        return m ? { name: m[1].trim(), email: m[2].trim() } : { name: "Homeseek", email: SENDGRID_FROM };
+      })(),
+        subject: "Your Homeseek Command Center login code",
+        content: [{ type: "text/html", value: OTP_HTML(otp) }],
+      }),
     });
+    const bodyText = await res.text();
+    if (!res.ok) {
+      console.error("SendGrid API error:", res.status, bodyText);
+      throw new Error(`SendGrid ${res.status}: ${bodyText.slice(0, 200)}`);
+    }
+    return;
+  }
+  if (gmailTransporter) {
+    try {
+      await gmailTransporter.sendMail({
+        from: GMAIL_USER,
+        to,
+        subject: "Your Homeseek Command Center login code",
+        html: OTP_HTML(otp),
+      });
+    } catch (err) {
+      if (err.code === "ETIMEDOUT" || err.message?.includes("timeout") || err.message?.includes("Connection timeout")) {
+        console.error("Gmail SMTP timeout – many clouds block outbound SMTP. Use SendGrid (HTTPS) or Resend with a verified domain instead.");
+      }
+      throw err;
+    }
     return;
   }
   const from = RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>";
@@ -899,7 +936,32 @@ app.get("/auth/me", (req, res) => {
   return res.status(401).json({ ok: false, error: "Not logged in" });
 });
 
+app.post("/auth/login", (req, res) => {
+  if (!AUTH_ENABLED) return res.status(400).json({ ok: false, error: "Auth not configured" });
+  if (!LOGIN_PASSWORD) return res.status(400).json({ ok: false, error: "Password login not configured" });
+  const username = (req.body?.username || "").trim();
+  const password = req.body?.password;
+  if (!username || password === undefined || password === null) {
+    return res.status(400).json({ ok: false, error: "Username and password required" });
+  }
+  const key = username.toLowerCase();
+  if (key !== LOGIN_USERNAME.toLowerCase() || String(password) !== String(LOGIN_PASSWORD)) {
+    return res.status(400).json({ ok: false, error: "Invalid username or password" });
+  }
+  const payload = { user: key, exp: Date.now() + SESSION_MAX_AGE_MS };
+  const token = signSession(payload);
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: SESSION_MAX_AGE_MS / 1000,
+    path: "/",
+  });
+  res.status(200).json({ ok: true, message: "Logged in" });
+});
+
 app.post("/auth/request-otp", async (req, res) => {
+  console.log("POST /auth/request-otp received", { username: req.body?.username });
   if (!AUTH_ENABLED) return res.status(400).json({ ok: false, error: "Auth not configured" });
   const username = (req.body?.username || "").trim();
   if (!username) return res.status(400).json({ ok: false, error: "Username required" });
@@ -928,7 +990,7 @@ app.post("/auth/request-otp", async (req, res) => {
   } else {
     await logLoginAttempt({ username: key, email_sent: false });
   }
-  res.json({ ok: true, message: "If this username is registered, you'll receive an OTP at the associated email." });
+  res.status(200).json({ ok: true, message: "If this username is registered, you'll receive an OTP at the associated email." });
 });
 
 app.post("/auth/verify-otp", async (req, res) => {

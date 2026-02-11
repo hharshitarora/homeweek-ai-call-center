@@ -507,9 +507,6 @@
       box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15);
     }
     .login-box .btn-block { width: 100%; justify-content: center; margin-top: 8px; }
-    .login-box .login-step { display: none; }
-    .login-box .login-step.active { display: block; }
-    .login-box .login-otp-hint { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -517,23 +514,16 @@
   <div id="loginScreen">
     <div class="login-box">
       <h1>Command Center</h1>
-      <p>Sign in with your username. We’ll send a one-time code to your email.</p>
-      <div id="loginStepUsername" class="login-step active">
-        <div class="form-group">
-          <label class="form-label" for="loginUsername">Username</label>
-          <input type="text" id="loginUsername" class="form-input" placeholder="Enter username" autocomplete="username" onkeydown="if(event.key==='Enter') sendOtp()">
-        </div>
-        <button type="button" class="btn btn-primary btn-block" id="sendOtpBtn" onclick="sendOtp()">Send OTP to email</button>
+      <p>Sign in with your username and password.</p>
+      <div class="form-group">
+        <label class="form-label" for="loginUsername">Username</label>
+        <input type="text" id="loginUsername" class="form-input" placeholder="Username" autocomplete="username" onkeydown="if(event.key==='Enter') document.getElementById('loginPassword').focus()">
       </div>
-      <div id="loginStepOtp" class="login-step">
-        <div class="form-group">
-          <label class="form-label" for="loginOtp">One-time code</label>
-          <input type="text" id="loginOtp" class="form-input" placeholder="Enter 6-digit code" autocomplete="one-time-code" maxlength="6" inputmode="numeric" pattern="[0-9]*" onkeydown="if(event.key==='Enter') verifyOtp()">
-          <p class="login-otp-hint">Check your email for the code.</p>
-        </div>
-        <button type="button" class="btn btn-primary btn-block" id="verifyOtpBtn" onclick="verifyOtp()">Log in</button>
-        <button type="button" class="btn btn-tertiary btn-sm btn-block" style="margin-top:8px;" onclick="showLoginStepUsername()">Use a different username</button>
+      <div class="form-group">
+        <label class="form-label" for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" class="form-input" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
       </div>
+      <button type="button" class="btn btn-primary btn-block" id="loginBtn" onclick="doLogin()">Log in</button>
       <p id="loginMessage" style="margin-top:16px; font-size:13px; color:var(--text-secondary); display:none;"></p>
     </div>
   </div>
@@ -709,10 +699,11 @@
     function showLoginScreen() {
       document.getElementById('loginScreen').classList.add('visible');
       document.getElementById('appContent').style.display = 'none';
-      showLoginStepUsername();
       document.getElementById('loginUsername').value = '';
-      document.getElementById('loginOtp').value = '';
-      document.getElementById('loginMessage').style.display = 'none';
+      const pw = document.getElementById('loginPassword');
+      if (pw) pw.value = '';
+      const msg = document.getElementById('loginMessage');
+      if (msg) msg.style.display = 'none';
     }
 
     function showApp() {
@@ -720,62 +711,31 @@
       document.getElementById('appContent').style.display = '';
     }
 
-    function showLoginStepUsername() {
-      document.getElementById('loginStepUsername').classList.add('active');
-      document.getElementById('loginStepOtp').classList.remove('active');
-    }
-
-    function showLoginStepOtp() {
-      document.getElementById('loginStepUsername').classList.remove('active');
-      document.getElementById('loginStepOtp').classList.add('active');
-      document.getElementById('loginOtp').value = '';
-      document.getElementById('loginOtp').focus();
-    }
-
     function setLoginMessage(text, isError) {
       const el = document.getElementById('loginMessage');
+      if (!el) return;
       el.textContent = text;
       el.style.display = text ? 'block' : 'none';
       el.style.color = isError ? 'var(--red)' : 'var(--text-secondary)';
     }
 
-    async function sendOtp() {
+    async function doLogin() {
       const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value;
       if (!username) { setLoginMessage('Enter your username.', true); return; }
-      const btn = document.getElementById('sendOtpBtn');
-      btn.disabled = true;
-      setLoginMessage('Sending…');
-      try {
-        const res = await fetch(`${API_BASE_URL}/auth/request-otp`, fetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) }));
-        const data = await res.json().catch(() => ({}));
-        if (data.ok) {
-          setLoginMessage('Check your email for the code.');
-          showLoginStepOtp();
-        } else {
-          setLoginMessage(data.error || 'Something went wrong.', true);
-        }
-      } catch (e) {
-        setLoginMessage('Network error. Try again.', true);
-      }
-      btn.disabled = false;
-    }
-
-    async function verifyOtp() {
-      const username = document.getElementById('loginUsername').value.trim();
-      const otp = document.getElementById('loginOtp').value.trim();
-      if (!username || !otp) { setLoginMessage('Enter the code from your email.', true); return; }
-      const btn = document.getElementById('verifyOtpBtn');
+      if (!password) { setLoginMessage('Enter your password.', true); return; }
+      const btn = document.getElementById('loginBtn');
       btn.disabled = true;
       setLoginMessage('');
       try {
-        const res = await fetch(`${API_BASE_URL}/auth/verify-otp`, fetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, otp }) }));
+        const res = await fetch(`${API_BASE_URL}/auth/login`, fetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) }));
         const data = await res.json().catch(() => ({}));
         if (data.ok) {
           showApp();
           loadData();
           document.getElementById('logoutBtn').style.display = 'inline-flex';
         } else {
-          setLoginMessage(data.error || 'Invalid code.', true);
+          setLoginMessage(data.error || 'Login failed.', true);
         }
       } catch (e) {
         setLoginMessage('Network error. Try again.', true);
