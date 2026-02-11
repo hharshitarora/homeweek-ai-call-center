@@ -240,6 +240,7 @@ function verifySession(value) {
 }
 
 async function sendOtpEmail(to, otp) {
+  const from = RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>";
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -247,15 +248,16 @@ async function sendOtpEmail(to, otp) {
       Authorization: `Bearer ${RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: RESEND_FROM,
+      from,
       to: [to],
       subject: "Your Homeseek Command Center login code",
       html: `<p>Your one-time login code is: <strong>${otp}</strong></p><p>It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`,
     }),
   });
+  const bodyText = await res.text();
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Resend API ${res.status}: ${text}`);
+    console.error("Resend API error:", res.status, bodyText);
+    throw new Error(`Resend ${res.status}: ${bodyText.slice(0, 200)}`);
   }
 }
 
@@ -891,7 +893,10 @@ app.post("/auth/request-otp", async (req, res) => {
       }
     }
     if (!atLeastOneSent) {
-      return res.status(500).json({ ok: false, error: "Failed to send OTP email" });
+      return res.status(500).json({
+        ok: false,
+        error: "OTP email could not be sent. Check Resend API key, RESEND_FROM, and that your account can send to this address. See server logs for details.",
+      });
     }
     const attemptId = await logLoginAttempt({ username: key, email_sent: true });
     otpStore.set(key, { otp, expiresAt, email: LOGIN_EMAILS[0], attemptId });
