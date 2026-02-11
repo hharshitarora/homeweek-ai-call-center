@@ -182,23 +182,25 @@ const supabase = createClient(
 );
 
 // -------------------- Auth (Email OTP) --------------------
-// Optional: when LOGIN_USERNAME, LOGIN_EMAIL, RESEND_API_KEY, SESSION_SECRET are set, protect app with OTP login
+// Optional: when LOGIN_USERNAME, LOGIN_EMAIL(S), RESEND_API_KEY, SESSION_SECRET are set, protect app with OTP login
+// LOGIN_EMAIL can be a single address or comma-separated (e.g. "you@x.com,dad@x.com") — OTP is sent to all
 const LOGIN_USERNAME = (process.env.LOGIN_USERNAME || "").trim();
-const LOGIN_EMAIL = (process.env.LOGIN_EMAIL || "").trim();
+const LOGIN_EMAIL_RAW = (process.env.LOGIN_EMAIL || "").trim();
+const LOGIN_EMAILS = LOGIN_EMAIL_RAW ? LOGIN_EMAIL_RAW.split(",").map((e) => e.trim()).filter(Boolean) : [];
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = (process.env.RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>").trim();
 const SESSION_SECRET = process.env.SESSION_SECRET;
-const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAIL && RESEND_API_KEY && SESSION_SECRET);
+const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && RESEND_API_KEY && SESSION_SECRET);
 
 if (AUTH_ENABLED) {
-  console.log("🔐 Auth enabled: OTP login required");
+  console.log("🔐 Auth enabled: OTP login required (emails:", LOGIN_EMAILS.length, ")");
 } else {
   console.log("🔓 Auth disabled: set LOGIN_USERNAME, LOGIN_EMAIL, RESEND_API_KEY, SESSION_SECRET to enable");
 }
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
 const SESSION_COOKIE_NAME = "session";
-const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SESSION_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // In-memory OTP store: key = username (lowercase), value = { otp, expiresAt, email, attemptId }
 const otpStore = new Map();
@@ -879,14 +881,20 @@ app.post("/auth/request-otp", async (req, res) => {
   if (valid) {
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = Date.now() + OTP_EXPIRY_MS;
-    try {
-      await sendOtpEmail(LOGIN_EMAIL, otp);
-      const attemptId = await logLoginAttempt({ username: key, email_sent: true });
-      otpStore.set(key, { otp, expiresAt, email: LOGIN_EMAIL, attemptId });
-    } catch (err) {
-      console.error("request-otp send email error:", err);
+    let atLeastOneSent = false;
+    for (const email of LOGIN_EMAILS) {
+      try {
+        await sendOtpEmail(email, otp);
+        atLeastOneSent = true;
+      } catch (err) {
+        console.error("request-otp send email error to", email, ":", err.message);
+      }
+    }
+    if (!atLeastOneSent) {
       return res.status(500).json({ ok: false, error: "Failed to send OTP email" });
     }
+    const attemptId = await logLoginAttempt({ username: key, email_sent: true });
+    otpStore.set(key, { otp, expiresAt, email: LOGIN_EMAILS[0], attemptId });
   } else {
     await logLoginAttempt({ username: key, email_sent: false });
   }
