@@ -392,6 +392,39 @@
     .btn-destructive { color: var(--red); background: rgba(255, 59, 48, 0.1); }
     .btn-destructive:hover { background: rgba(255, 59, 48, 0.15); }
 
+    /* --- Export dropdown --- */
+    .export-wrap { position: relative; }
+    .export-dropdown {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      min-width: 240px;
+      background: var(--bg);
+      border: 1px solid var(--separator);
+      border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-lg);
+      z-index: 30;
+      padding: 4px;
+    }
+    .export-dropdown.open { display: block; }
+    .export-dropdown-item {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 13px;
+      font-family: inherit;
+      color: var(--text-primary);
+      background: none;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .export-dropdown-item:hover { background: var(--bg-secondary); }
+
     /* --- Form Styles (reused/adapted) --- */
     .form-section { padding: 20px 24px 0; }
     .form-section-title {
@@ -429,10 +462,83 @@
     }
     .toast.visible { transform: translateX(-50%) translateY(0); opacity: 1; }
     .toast.error { background: var(--red); }
+
+    /* --- Login screen (email OTP) --- */
+    #loginScreen {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: var(--bg-secondary);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    #loginScreen.visible { display: flex; }
+    .login-box {
+      background: var(--bg);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      padding: 32px;
+      width: 100%;
+      max-width: 380px;
+    }
+    .login-box h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .login-box p {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .login-box .form-group { margin-bottom: 16px; }
+    .login-box .form-label { font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    .login-box .form-input {
+      width: 100%;
+      padding: 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--separator);
+      font-size: 16px;
+    }
+    .login-box .form-input:focus {
+      outline: none;
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.15);
+    }
+    .login-box .btn-block { width: 100%; justify-content: center; margin-top: 8px; }
+    .login-box .login-step { display: none; }
+    .login-box .login-step.active { display: block; }
+    .login-box .login-otp-hint { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
   </style>
 </head>
 <body>
-  <div class="app">
+  <!-- Login screen (shown when auth enabled and not logged in) -->
+  <div id="loginScreen">
+    <div class="login-box">
+      <h1>Command Center</h1>
+      <p>Sign in with your username. We’ll send a one-time code to your email.</p>
+      <div id="loginStepUsername" class="login-step active">
+        <div class="form-group">
+          <label class="form-label" for="loginUsername">Username</label>
+          <input type="text" id="loginUsername" class="form-input" placeholder="Enter username" autocomplete="username" onkeydown="if(event.key==='Enter') sendOtp()">
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="sendOtpBtn" onclick="sendOtp()">Send OTP to email</button>
+      </div>
+      <div id="loginStepOtp" class="login-step">
+        <div class="form-group">
+          <label class="form-label" for="loginOtp">One-time code</label>
+          <input type="text" id="loginOtp" class="form-input" placeholder="Enter 6-digit code" autocomplete="one-time-code" maxlength="6" inputmode="numeric" pattern="[0-9]*" onkeydown="if(event.key==='Enter') verifyOtp()">
+          <p class="login-otp-hint">Check your email for the code.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-block" id="verifyOtpBtn" onclick="verifyOtp()">Log in</button>
+        <button type="button" class="btn btn-tertiary btn-sm btn-block" style="margin-top:8px;" onclick="showLoginStepUsername()">Use a different username</button>
+      </div>
+      <p id="loginMessage" style="margin-top:16px; font-size:13px; color:var(--text-secondary); display:none;"></p>
+    </div>
+  </div>
+
+  <div class="app" id="appContent">
     <!-- Navbar -->
     <nav class="navbar">
       <div class="navbar-left">
@@ -467,6 +573,7 @@
           </div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="openAddDrawer()">+ New Lead</button>
+        <button class="btn btn-tertiary btn-sm" id="logoutBtn" onclick="logout()" style="display:none;">Log out</button>
       </div>
     </nav>
 
@@ -514,6 +621,16 @@
       <button id="bulkDeleteBtn" class="btn btn-destructive btn-sm" onclick="handleBulkDelete()" style="display:none;">
         Delete Selected (<span id="selectedCount">0</span>)
       </button>
+
+      <div class="export-wrap">
+        <button type="button" id="exportCsvBtn" class="btn btn-secondary btn-sm" onclick="toggleExportMenu(event)" aria-haspopup="true" aria-expanded="false">
+          Export to CSV ▾
+        </button>
+        <div id="exportDropdown" class="export-dropdown" role="menu" aria-hidden="true">
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="exportToCSV('current')">Current view (<span id="exportCurrentCount">0</span> rows)</button>
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="exportToCSV('interested')">Interested leads only (<span id="exportInterestedCount">0</span> rows)</button>
+        </div>
+      </div>
     </div>
 
     <!-- Main Content -->
@@ -559,6 +676,121 @@
     const LOCAL_API = 'http://localhost:3000';
     const API_BASE_URL = window.API_BASE_URL || (isLocalhost ? LOCAL_API : PRODUCTION_API);
 
+    const fetchOpts = (opts = {}) => ({ ...opts, credentials: 'include' });
+
+    // --- Auth (OTP login) ---
+    let authRequired = false;
+
+    async function checkAuth() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/auth/me`, fetchOpts());
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && data.user && data.user !== 'anonymous') {
+          authRequired = true;
+          showApp();
+          loadData();
+          const logoutBtn = document.getElementById('logoutBtn');
+          if (logoutBtn) logoutBtn.style.display = 'inline-flex';
+          return;
+        }
+        if (res.status === 401) {
+          authRequired = true;
+          showLoginScreen();
+          return;
+        }
+        showApp();
+        loadData();
+      } catch (e) {
+        showApp();
+        loadData();
+      }
+    }
+
+    function showLoginScreen() {
+      document.getElementById('loginScreen').classList.add('visible');
+      document.getElementById('appContent').style.display = 'none';
+      showLoginStepUsername();
+      document.getElementById('loginUsername').value = '';
+      document.getElementById('loginOtp').value = '';
+      document.getElementById('loginMessage').style.display = 'none';
+    }
+
+    function showApp() {
+      document.getElementById('loginScreen').classList.remove('visible');
+      document.getElementById('appContent').style.display = '';
+    }
+
+    function showLoginStepUsername() {
+      document.getElementById('loginStepUsername').classList.add('active');
+      document.getElementById('loginStepOtp').classList.remove('active');
+    }
+
+    function showLoginStepOtp() {
+      document.getElementById('loginStepUsername').classList.remove('active');
+      document.getElementById('loginStepOtp').classList.add('active');
+      document.getElementById('loginOtp').value = '';
+      document.getElementById('loginOtp').focus();
+    }
+
+    function setLoginMessage(text, isError) {
+      const el = document.getElementById('loginMessage');
+      el.textContent = text;
+      el.style.display = text ? 'block' : 'none';
+      el.style.color = isError ? 'var(--red)' : 'var(--text-secondary)';
+    }
+
+    async function sendOtp() {
+      const username = document.getElementById('loginUsername').value.trim();
+      if (!username) { setLoginMessage('Enter your username.', true); return; }
+      const btn = document.getElementById('sendOtpBtn');
+      btn.disabled = true;
+      setLoginMessage('Sending…');
+      try {
+        const res = await fetch(`${API_BASE_URL}/auth/request-otp`, fetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) }));
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) {
+          setLoginMessage('Check your email for the code.');
+          showLoginStepOtp();
+        } else {
+          setLoginMessage(data.error || 'Something went wrong.', true);
+        }
+      } catch (e) {
+        setLoginMessage('Network error. Try again.', true);
+      }
+      btn.disabled = false;
+    }
+
+    async function verifyOtp() {
+      const username = document.getElementById('loginUsername').value.trim();
+      const otp = document.getElementById('loginOtp').value.trim();
+      if (!username || !otp) { setLoginMessage('Enter the code from your email.', true); return; }
+      const btn = document.getElementById('verifyOtpBtn');
+      btn.disabled = true;
+      setLoginMessage('');
+      try {
+        const res = await fetch(`${API_BASE_URL}/auth/verify-otp`, fetchOpts({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, otp }) }));
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) {
+          showApp();
+          loadData();
+          document.getElementById('logoutBtn').style.display = 'inline-flex';
+        } else {
+          setLoginMessage(data.error || 'Invalid code.', true);
+        }
+      } catch (e) {
+        setLoginMessage('Network error. Try again.', true);
+      }
+      btn.disabled = false;
+    }
+
+    async function logout() {
+      try {
+        await fetch(`${API_BASE_URL}/auth/logout`, fetchOpts({ method: 'POST' }));
+      } catch (_) {}
+      document.getElementById('logoutBtn').style.display = 'none';
+      showLoginScreen();
+    }
+
     // --- State ---
     let allRecords = [];
     let filteredRecords = [];
@@ -595,14 +827,17 @@
 
     async function loadData() {
       try {
-        const res = await fetch(`${API_BASE_URL}/rows`);
-        const data = await res.json();
-        
+        const res = await fetch(`${API_BASE_URL}/rows`, fetchOpts());
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 && authRequired) {
+          showLoginScreen();
+          return;
+        }
         if (!data.ok) throw new Error(data.error);
         
         allRecords = data.rows || [];
         updateStats();
-        applyFilters(); // This triggers render
+        applyFilters(); // This triggers render (and updateExportCounts)
       } catch (e) {
         const msg = isLocalhost && (e.message === 'Failed to fetch' || e.name === 'TypeError')
           ? 'Failed to load data. Is the server running? (npm run dev on port 3000)'
@@ -686,6 +921,7 @@
       
       if (filteredRecords.length === 0) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state">No leads found matching your filters.</div></td></tr>`;
+        updateExportCounts();
         return;
       }
 
@@ -727,6 +963,15 @@
       // Update bulk selection UI after rendering
       updateBulkDeleteButton();
       updateSelectAllCheckbox();
+      updateExportCounts();
+    }
+
+    function updateExportCounts() {
+      const currentEl = document.getElementById('exportCurrentCount');
+      const interestedEl = document.getElementById('exportInterestedCount');
+      if (currentEl) currentEl.textContent = filteredRecords.length;
+      const interestedCount = allRecords.filter(r => r.outcome === 'interested').length;
+      if (interestedEl) interestedEl.textContent = interestedCount;
     }
 
     function renderDrawer(record, editing = false, adding = false) {
@@ -916,11 +1161,11 @@
       const payload = isAdding ? { data } : { id: recordId, data };
 
       try {
-        const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        const res = await fetch(`${API_BASE_URL}${endpoint}`, fetchOpts({
           method,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        }));
 
         const resData = await res.json();
         if (!resData.ok) throw new Error(resData.error);
@@ -940,11 +1185,11 @@
       try {
         const providerLabel = provider === 'bolna' ? 'Hinglish' : 'English';
 
-        const res = await fetch(`${API_BASE_URL}/trigger-call`, {
+        const res = await fetch(`${API_BASE_URL}/trigger-call`, fetchOpts({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id, provider })
-        });
+        }));
 
         const data = await res.json();
         
@@ -971,11 +1216,11 @@
     async function handleDelete(id) {
       if(!confirm('Delete this lead?')) return;
       try {
-        const res = await fetch(`${API_BASE_URL}/delete-row`, {
+        const res = await fetch(`${API_BASE_URL}/delete-row`, fetchOpts({
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id })
-        });
+        }));
         const d = await res.json();
         if(!d.ok) throw new Error(d.error);
 
@@ -997,7 +1242,7 @@
       
       try {
         showToast('Uploading...');
-        const res = await fetch(`${API_BASE_URL}/upload-csv`, { method: 'POST', body: formData });
+        const res = await fetch(`${API_BASE_URL}/upload-csv`, fetchOpts({ method: 'POST', body: formData }));
         const data = await res.json();
         if(!data.ok) throw new Error(data.error);
         
@@ -1045,11 +1290,11 @@
       try {
         showToast(`Starting batch of ${limit} calls (${ratioText})...`);
         
-        const res = await fetch(`${API_BASE_URL}/run-dialer`, {
+        const res = await fetch(`${API_BASE_URL}/run-dialer`, fetchOpts({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ limit, bolna_ratio: bolnaRatio })
-        });
+        }));
 
         const data = await res.json();
         
@@ -1124,6 +1369,81 @@
       }
     }
 
+    // --- Export to CSV ---
+    function toggleExportMenu(event) {
+      event.stopPropagation();
+      const menu = document.getElementById('exportDropdown');
+      const btn = document.getElementById('exportCsvBtn');
+      const isOpen = menu.classList.toggle('open');
+      btn.setAttribute('aria-expanded', isOpen);
+      menu.setAttribute('aria-hidden', !isOpen);
+      if (isOpen) {
+        document.addEventListener('click', closeExportMenuOnce);
+      } else {
+        document.removeEventListener('click', closeExportMenuOnce);
+      }
+    }
+
+    function closeExportMenuOnce() {
+      const menu = document.getElementById('exportDropdown');
+      menu.classList.remove('open');
+      document.getElementById('exportCsvBtn').setAttribute('aria-expanded', 'false');
+      menu.setAttribute('aria-hidden', 'true');
+      document.removeEventListener('click', closeExportMenuOnce);
+    }
+
+    function escapeCSVCell(val) {
+      if (val == null || val === '') return '';
+      const s = String(val).replace(/"/g, '""');
+      if (/[",\r\n]/.test(s)) return `"${s}"`;
+      return s;
+    }
+
+    function buildAndDownloadCSV(records, filename) {
+      const headers = ['Name', 'Phone', 'Email', 'Property Address', 'Price', 'Status', 'Outcome', 'Last Call', 'Notes', 'Summary'];
+      const rows = records.map(r => {
+        const outcomeLabel = OUTCOME_LABELS[r.outcome] || r.outcome || '';
+        const lastCall = r.last_call_at ? new Date(r.last_call_at).toLocaleString() : '';
+        return [
+          r.lead_name || '',
+          r.phone_e164 || '',
+          r.email || '',
+          r.property_address || '',
+          r.property_price_inr || '',
+          r.call_status || '',
+          outcomeLabel,
+          lastCall,
+          (r.notes || '').replace(/\r?\n/g, ' '),
+          (r.summary || '').replace(/\r?\n/g, ' ')
+        ].map(escapeCSVCell);
+      });
+      const headerLine = headers.map(escapeCSVCell).join(',');
+      const bodyLines = rows.map(row => row.join(','));
+      const csv = [headerLine, ...bodyLines].join('\r\n');
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      closeExportMenuOnce();
+    }
+
+    function exportToCSV(mode) {
+      const records = mode === 'interested'
+        ? allRecords.filter(r => r.outcome === 'interested')
+        : filteredRecords;
+      if (records.length === 0) {
+        showToast(mode === 'interested' ? 'No interested leads to export.' : 'No rows in current view to export.', true);
+        return;
+      }
+      const suffix = mode === 'interested' ? 'interested-leads' : 'leads-view';
+      const filename = `homeseek-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`;
+      buildAndDownloadCSV(records, filename);
+      showToast(`Exported ${records.length} lead(s) to ${filename}`);
+    }
+
     async function handleBulkDelete() {
       const count = selectedRows.size;
       if (count === 0) return;
@@ -1136,11 +1456,11 @@
         const ids = Array.from(selectedRows);
         showToast(`Deleting ${count} lead(s)...`);
 
-        const res = await fetch(`${API_BASE_URL}/delete-rows-bulk`, {
+        const res = await fetch(`${API_BASE_URL}/delete-rows-bulk`, fetchOpts({
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids })
-        });
+        }));
 
         const data = await res.json();
 
@@ -1159,7 +1479,7 @@
     }
 
     // --- Init ---
-    loadData();
+    checkAuth();
 
     // No automatic polling - refresh only on user actions
     // Use the Refresh button to manually update data

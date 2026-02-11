@@ -18,6 +18,7 @@
  */
 
 import "dotenv/config";
+import crypto from "crypto";
 import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
@@ -179,6 +180,117 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// -------------------- Auth (Email OTP) --------------------
+// Optional: when LOGIN_USERNAME, LOGIN_EMAIL, RESEND_API_KEY, SESSION_SECRET are set, protect app with OTP login
+const LOGIN_USERNAME = (process.env.LOGIN_USERNAME || "").trim();
+const LOGIN_EMAIL = (process.env.LOGIN_EMAIL || "").trim();
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const RESEND_FROM = (process.env.RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>").trim();
+const SESSION_SECRET = process.env.SESSION_SECRET;
+const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAIL && RESEND_API_KEY && SESSION_SECRET);
+
+if (AUTH_ENABLED) {
+  console.log("🔐 Auth enabled: OTP login required");
+} else {
+  console.log("🔓 Auth disabled: set LOGIN_USERNAME, LOGIN_EMAIL, RESEND_API_KEY, SESSION_SECRET to enable");
+}
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+const SESSION_COOKIE_NAME = "session";
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// In-memory OTP store: key = username (lowercase), value = { otp, expiresAt, email, attemptId }
+const otpStore = new Map();
+
+function parseCookies(cookieHeader) {
+  const out = {};
+  if (!cookieHeader) return out;
+  cookieHeader.split(";").forEach((s) => {
+    const i = s.indexOf("=");
+    if (i > 0) out[s.slice(0, i).trim()] = s.slice(i + 1).trim();
+  });
+  return out;
+}
+
+function signSession(payload) {
+  const data = JSON.stringify(payload);
+  const b64 = Buffer.from(data, "utf8").toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(b64).digest("base64url");
+  return `${b64}.${sig}`;
+}
+
+function verifySession(value) {
+  if (!value || typeof value !== "string") return null;
+  const i = value.lastIndexOf(".");
+  if (i <= 0) return null;
+  const b64 = value.slice(0, i);
+  const sig = value.slice(i + 1);
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(b64).digest("base64url");
+  if (sig !== expected) return null;
+  try {
+    const data = JSON.parse(Buffer.from(b64, "base64url").toString("utf8"));
+    if (data.exp && Date.now() > data.exp) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function sendOtpEmail(to, otp) {
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM,
+      to: [to],
+      subject: "Your Homeseek Command Center login code",
+      html: `<p>Your one-time login code is: <strong>${otp}</strong></p><p>It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Resend API ${res.status}: ${text}`);
+  }
+}
+
+async function logLoginAttempt({ username, email_sent, verified = false }) {
+  try {
+    const { data, error } = await supabase
+      .from("login_attempts")
+      .insert({ username: username.toLowerCase(), email_sent, verified })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data?.id ?? null;
+  } catch (err) {
+    console.error("logLoginAttempt error:", err.message);
+    return null;
+  }
+}
+
+function requireAuth(req, res, next) {
+  if (!AUTH_ENABLED) return next();
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[SESSION_COOKIE_NAME];
+  const session = verifySession(token);
+  if (session && session.user) {
+    req.user = session.user;
+    return next();
+  }
+  return res.status(401).json({ ok: false, error: "Login required" });
+}
+
+const PROTECTED_PATHS = [
+  "/rows", "/headers", "/add-row", "/update-row", "/delete-row", "/delete-rows-bulk",
+  "/trigger-call", "/run-dialer", "/upload-csv",
+];
+function isProtectedPath(path) {
+  return PROTECTED_PATHS.some((p) => path === p || path.startsWith(p + "?"));
+}
 
 // -------------------- Defaults --------------------
 const DEFAULT_VOICE_ID = "095a1518-ecdf-4870-a5ff-c74b43a08764";
@@ -747,6 +859,78 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 // Serve index.html for root path
 app.get("/", (req, res) => {
   res.sendFile("index.html", { root: "public" });
+});
+
+// --- Auth routes (no auth required) ---
+app.get("/auth/me", (req, res) => {
+  if (!AUTH_ENABLED) return res.json({ ok: true, user: "anonymous" });
+  const cookies = parseCookies(req.headers.cookie);
+  const session = verifySession(cookies[SESSION_COOKIE_NAME]);
+  if (session && session.user) return res.json({ ok: true, user: session.user });
+  return res.status(401).json({ ok: false, error: "Not logged in" });
+});
+
+app.post("/auth/request-otp", async (req, res) => {
+  if (!AUTH_ENABLED) return res.status(400).json({ ok: false, error: "Auth not configured" });
+  const username = (req.body?.username || "").trim();
+  if (!username) return res.status(400).json({ ok: false, error: "Username required" });
+  const key = username.toLowerCase();
+  const valid = key === LOGIN_USERNAME.toLowerCase();
+  if (valid) {
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = Date.now() + OTP_EXPIRY_MS;
+    try {
+      await sendOtpEmail(LOGIN_EMAIL, otp);
+      const attemptId = await logLoginAttempt({ username: key, email_sent: true });
+      otpStore.set(key, { otp, expiresAt, email: LOGIN_EMAIL, attemptId });
+    } catch (err) {
+      console.error("request-otp send email error:", err);
+      return res.status(500).json({ ok: false, error: "Failed to send OTP email" });
+    }
+  } else {
+    await logLoginAttempt({ username: key, email_sent: false });
+  }
+  res.json({ ok: true, message: "If this username is registered, you'll receive an OTP at the associated email." });
+});
+
+app.post("/auth/verify-otp", async (req, res) => {
+  if (!AUTH_ENABLED) return res.status(400).json({ ok: false, error: "Auth not configured" });
+  const username = (req.body?.username || "").trim();
+  const otp = (req.body?.otp || "").trim();
+  if (!username || !otp) return res.status(400).json({ ok: false, error: "Username and OTP required" });
+  const key = username.toLowerCase();
+  const stored = otpStore.get(key);
+  if (!stored) return res.status(400).json({ ok: false, error: "Invalid or expired OTP. Request a new one." });
+  if (Date.now() > stored.expiresAt) {
+    otpStore.delete(key);
+    return res.status(400).json({ ok: false, error: "OTP expired. Request a new one." });
+  }
+  if (stored.otp !== otp) return res.status(400).json({ ok: false, error: "Invalid OTP." });
+  otpStore.delete(key);
+  if (stored.attemptId) {
+    await supabase.from("login_attempts").update({ verified: true }).eq("id", stored.attemptId);
+  }
+  const payload = { user: key, exp: Date.now() + SESSION_MAX_AGE_MS };
+  const token = signSession(payload);
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: SESSION_MAX_AGE_MS / 1000,
+    path: "/",
+  });
+  res.json({ ok: true, message: "Logged in" });
+});
+
+app.post("/auth/logout", (req, res) => {
+  res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+  res.json({ ok: true });
+});
+
+// Middleware: require auth for protected paths when auth is enabled
+app.use((req, res, next) => {
+  if (AUTH_ENABLED && isProtectedPath(req.path)) return requireAuth(req, res, next);
+  next();
 });
 
 /**
