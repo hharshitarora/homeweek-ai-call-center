@@ -24,6 +24,7 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import multer from "multer";
+import nodemailer from "nodemailer";
 import { parse } from "csv-parse/sync";
 
 // -------------------- App --------------------
@@ -182,20 +183,32 @@ const supabase = createClient(
 );
 
 // -------------------- Auth (Email OTP) --------------------
-// Optional: when LOGIN_USERNAME, LOGIN_EMAIL(S), RESEND_API_KEY, SESSION_SECRET are set, protect app with OTP login
+// Optional: when LOGIN_USERNAME, LOGIN_EMAIL(S), SESSION_SECRET + (Resend OR Gmail) are set, protect app with OTP login
 // LOGIN_EMAIL can be a single address or comma-separated (e.g. "you@x.com,dad@x.com") — OTP is sent to all
+// Email sending: use Gmail SMTP (no domain needed) or Resend. Gmail = GMAIL_USER + GMAIL_APP_PASSWORD.
 const LOGIN_USERNAME = (process.env.LOGIN_USERNAME || "").trim();
 const LOGIN_EMAIL_RAW = (process.env.LOGIN_EMAIL || "").trim();
 const LOGIN_EMAILS = LOGIN_EMAIL_RAW ? LOGIN_EMAIL_RAW.split(",").map((e) => e.trim()).filter(Boolean) : [];
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const RESEND_FROM = (process.env.RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>").trim();
+const GMAIL_USER = (process.env.GMAIL_USER || "").trim();
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
 const SESSION_SECRET = process.env.SESSION_SECRET;
-const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && RESEND_API_KEY && SESSION_SECRET);
+const EMAIL_SENDER_OK = !!(RESEND_API_KEY || (GMAIL_USER && GMAIL_APP_PASSWORD));
+const AUTH_ENABLED = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK && SESSION_SECRET);
 
 if (AUTH_ENABLED) {
-  console.log("🔐 Auth enabled: OTP login required (emails:", LOGIN_EMAILS.length, ")");
+  console.log("🔐 Auth enabled: OTP login (emails:", LOGIN_EMAILS.length, ", sender:", GMAIL_USER ? "Gmail" : "Resend", ")");
 } else {
-  console.log("🔓 Auth disabled: set LOGIN_USERNAME, LOGIN_EMAIL, RESEND_API_KEY, SESSION_SECRET to enable");
+  console.log("🔓 Auth disabled: set LOGIN_USERNAME, LOGIN_EMAIL, SESSION_SECRET, and either RESEND_API_KEY or (GMAIL_USER + GMAIL_APP_PASSWORD)");
+}
+
+let gmailTransporter = null;
+if (GMAIL_USER && GMAIL_APP_PASSWORD) {
+  gmailTransporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+  });
 }
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
@@ -239,7 +252,19 @@ function verifySession(value) {
   }
 }
 
+const OTP_HTML = (otp) =>
+  `<p>Your one-time login code is: <strong>${otp}</strong></p><p>It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`;
+
 async function sendOtpEmail(to, otp) {
+  if (gmailTransporter) {
+    await gmailTransporter.sendMail({
+      from: GMAIL_USER,
+      to,
+      subject: "Your Homeseek Command Center login code",
+      html: OTP_HTML(otp),
+    });
+    return;
+  }
   const from = RESEND_FROM || "Homeseek Command Center <onboarding@resend.dev>";
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -251,7 +276,7 @@ async function sendOtpEmail(to, otp) {
       from,
       to: [to],
       subject: "Your Homeseek Command Center login code",
-      html: `<p>Your one-time login code is: <strong>${otp}</strong></p><p>It expires in 10 minutes. If you didn't request this, you can ignore this email.</p>`,
+      html: OTP_HTML(otp),
     }),
   });
   const bodyText = await res.text();
