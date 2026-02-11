@@ -11,8 +11,8 @@
  *   PUT  /update-row
  *   DELETE /delete-row
  *   DELETE /delete-rows-bulk
- *   POST /trigger-call        - Single call (supports provider: "bland" | "bolna")
- *   POST /run-dialer          - Bulk calls (supports bolna_ratio for A/B testing)
+ *   POST /trigger-call        - Single call (supports provider: "bland" | "bolna"); auth: session cookie or API key (TRIGGER_API_KEY / API_KEY)
+ *   POST /run-dialer          - Bulk calls (supports bolna_ratio for A/B testing); same auth as trigger-call
  *   POST /webhooks/bland      - Bland call completion webhook
  *   POST /webhooks/bolna      - Bolna call completion webhook
  */
@@ -35,7 +35,7 @@ app.use(cors({
   origin: true, // Allow all origins (or specify your Cloudflare Pages domain)
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key']
 }));
 
 app.use(express.json({ limit: "5mb" }));
@@ -200,9 +200,12 @@ const EMAIL_SENDER_OK = !!(RESEND_API_KEY || (GMAIL_USER && GMAIL_APP_PASSWORD) 
 const PASSWORD_AUTH = !!(LOGIN_USERNAME && LOGIN_PASSWORD && SESSION_SECRET);
 const OTP_AUTH = !!(LOGIN_USERNAME && LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK && SESSION_SECRET);
 const AUTH_ENABLED = !!(LOGIN_USERNAME && SESSION_SECRET && (LOGIN_PASSWORD || (LOGIN_EMAILS.length > 0 && EMAIL_SENDER_OK)));
+// Optional: allow API key for protected routes (e.g. when cookies aren't sent cross-origin or for server-to-server)
+const API_KEY = process.env.TRIGGER_API_KEY || process.env.API_KEY || "";
 
 if (AUTH_ENABLED) {
   console.log("🔐 Auth enabled:", PASSWORD_AUTH ? "static password" : "OTP (email)");
+  if (API_KEY) console.log("🔑 API key auth enabled for protected routes (Bearer or X-API-Key)");
 } else {
   console.log("🔓 Auth disabled: set LOGIN_USERNAME, SESSION_SECRET, and either LOGIN_PASSWORD or (LOGIN_EMAIL + email sender)");
 }
@@ -340,12 +343,23 @@ async function logLoginAttempt({ username, email_sent, verified = false }) {
 
 function requireAuth(req, res, next) {
   if (!AUTH_ENABLED) return next();
+  // 1) Session cookie (browser, same-origin or cross-origin with credentials)
   const cookies = parseCookies(req.headers.cookie);
   const token = cookies[SESSION_COOKIE_NAME];
   const session = verifySession(token);
   if (session && session.user) {
     req.user = session.user;
     return next();
+  }
+  // 2) API key (Bearer or X-API-Key) so trigger-call/run-dialer work when cookies aren't sent (e.g. cross-origin or scripts)
+  if (API_KEY && typeof API_KEY === "string" && API_KEY.length > 0) {
+    const authHeader = req.headers.authorization;
+    const bearer = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    const xApiKey = (req.headers["x-api-key"] || "").trim();
+    if ((bearer && bearer === API_KEY) || (xApiKey && xApiKey === API_KEY)) {
+      req.user = "api-key";
+      return next();
+    }
   }
   return res.status(401).json({ ok: false, error: "Login required" });
 }
@@ -703,6 +717,16 @@ YOU ARE NOT AUTHORIZED TO
 - Discuss other projects besides Tulip Monsella
 
 --------------------------------
+HOW TO SAY NUMBERS AND UNITS (VOICE — ALWAYS USE FULL WORDS)
+--------------------------------
+When speaking out loud, never use abbreviations or acronyms. Say the full form so the listener hears clear, natural speech:
+- For decimal numbers, say the word "point" instead of a dot — e.g. "8 point 5 crores" not "8.5 crores". (A period/dot is read as end of sentence by the voice; "point" is correct for decimals.)
+- Say "rupees 8 point 5 crores" (or "8 point 5 crore rupees") — never "Rs 8.5 Cr", "₹8.5 Cr", or "RS 8.5 CR".
+- Say "square feet" or "square foot" — never "sq ft", "sqft", or "SQFT".
+- Say "lakh" and "crore" in full (e.g. "one lakh square feet", "8 point 5 crores").
+- Same for any other units: say the full word (e.g. "kilometres", "acres"), not abbreviations.
+
+--------------------------------
 CRITICAL BEHAVIOR RULES
 --------------------------------
 - Speak naturally, concise, confident, and empathetic
@@ -724,6 +748,11 @@ CRITICAL BEHAVIOR RULES
 - If there is brief silence, say **“Take your time.”** once and wait.
 - Do NOT move to the next question without a response.
 
+**Never interrupt the lead**
+- Wait for the lead to finish their full sentence or thought before you respond. Do NOT start speaking as soon as they pause briefly — they may be thinking or taking a breath.
+- If you are not sure they are done, wait. It is better to have a short silence than to cut them off mid-sentence.
+- Never talk over the lead or jump in before they have clearly finished speaking.
+
 **Contact & Identity Handling**
 - If asked for your phone number or contact details:
   - Do NOT invent or share any number.
@@ -735,6 +764,16 @@ If the lead challenges a fact:
 2) Clarify or reframe using available knowledge  
 3) Provide general real estate context if appropriate  
 4) Escalate to senior agent follow-up only if needed  
+
+--------------------------------
+DISINTEREST & ENDING (CRITICAL — DO NOT IGNORE)
+--------------------------------
+- If the lead clearly says they are NOT interested, NOT looking, don't want to continue, don't want details, or asks to stop (in any language, e.g. "no", "not interested", "I'm not looking", "don't want", "stop", "nahi", "ਨਹੀਂ", etc.):
+  1) Say ONE short, polite closing line only. For example: "No problem. Thank you for your time. Goodbye." or "Understood. Thanks for your time. Goodbye."
+  2) Do NOT pitch again. Do NOT offer more details. Do NOT ask "Would you like to hear about...?" or "Would you like me to share...?" after they have said they're not interested.
+  3) Consider the conversation complete; do not try to re-engage or change their mind.
+- Never be pushy. One clear "not interested" or "not looking" means stop selling and end politely.
+- If they say they're busy, don't have time, or to call back later, accept it and close with a brief thank-you. Do not keep pitching.
 
 --------------------------------
 LEAD CONTEXT

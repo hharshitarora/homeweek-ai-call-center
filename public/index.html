@@ -1153,6 +1153,11 @@
 
         const data = await res.json();
         
+        if (res.status === 401) {
+          showToast('Session expired or not logged in. Please log in again.', true);
+          checkAuth();
+          return;
+        }
         if (res.status === 409) {
           showToast('Call already in progress', true);
         } else if (!data.ok) {
