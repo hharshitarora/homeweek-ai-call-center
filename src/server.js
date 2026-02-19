@@ -88,6 +88,14 @@ if (!PUBLIC_WEBHOOK_URL) {
 // Derive Bolna webhook URL from the same base domain
 const BOLNA_WEBHOOK_URL = PUBLIC_WEBHOOK_URL.replace('/webhooks/bland', '/webhooks/bolna');
 
+// Bolna requires batch schedule time to be at least 2 minutes in the future.
+// Keep a buffer for clock skew / provider-side validation.
+const BOLNA_MIN_SCHEDULE_SECONDS = 120;
+const BOLNA_BATCH_SCHEDULE_DELAY_SECONDS = Math.max(
+  Number(process.env.BOLNA_BATCH_SCHEDULE_DELAY_SECONDS || 150),
+  BOLNA_MIN_SCHEDULE_SECONDS
+);
+
 console.log(`📡 Bland Webhook URL: ${PUBLIC_WEBHOOK_URL}`);
 console.log(`📡 Bolna Webhook URL: ${BOLNA_WEBHOOK_URL}`);
 
@@ -385,14 +393,43 @@ const LEAD_HEADERS = [
   "property_beds_baths", "property_highlights", "showing_windows", "property_url",
   "call_status", "call_attempts", "last_call_at", "bland_call_id", "bolna_execution_id",
   "call_provider", "outcome", "next_action", "notes", "transcript", "recording_url",
-  "summary", "voice_id", "created_at", "updated_at"
+  "summary", "voice_id", "dataset_id", "source_row_number", "created_at", "updated_at"
 ];
 
-async function readAllRows() {
+async function createDataset({ name, sourceFilename = null, uploadedBy = null, rowCount = 0, status = "active", notes = null }) {
   const { data, error } = await supabase
-    .from("leads")
+    .from("datasets")
+    .insert({
+      name,
+      source_filename: sourceFilename,
+      uploaded_by: uploadedBy,
+      row_count: rowCount,
+      status,
+      notes,
+    })
     .select("*")
-    .order("created_at", { ascending: true });
+    .single();
+
+  if (error) {
+    console.error("createDataset error:", error.message);
+    throw error;
+  }
+
+  return data;
+}
+
+async function readAllRows(datasetId = null) {
+  let query = supabase
+    .from("leads")
+    .select("*");
+
+  if (datasetId === "initial") {
+    query = query.is("dataset_id", null);
+  } else if (datasetId) {
+    query = query.eq("dataset_id", datasetId);
+  }
+
+  const { data, error } = await query.order("created_at", { ascending: true });
 
   if (error) {
     console.error("readAllRows error:", error.message);
@@ -405,7 +442,7 @@ async function readAllRows() {
     call_attempts: row.call_attempts ?? 0,
   }));
 
-  console.log(`readAllRows: Returning ${rows.length} rows`);
+  console.log(`readAllRows: Returning ${rows.length} rows${datasetId ? ` for dataset ${datasetId}` : ""}`);
   return { headers: LEAD_HEADERS, rows };
 }
 
@@ -455,6 +492,10 @@ async function updateRow(id, updates) {
 }
 
 async function appendRow(rowData) {
+  const sourceRowNumber = rowData.source_row_number == null || rowData.source_row_number === ""
+    ? null
+    : parseInt(rowData.source_row_number, 10);
+
   // Auto-generate IDs if not provided
   const insertData = {
     ...rowData,
@@ -462,6 +503,8 @@ async function appendRow(rowData) {
     property_id: rowData.property_id || generateId("prop"),
     call_status: rowData.call_status || "queued",
     call_attempts: parseInt(rowData.call_attempts, 10) || 0,
+    dataset_id: rowData.dataset_id || null,
+    source_row_number: Number.isFinite(sourceRowNumber) ? sourceRowNumber : null,
   };
 
   const { data, error } = await supabase
@@ -516,6 +559,41 @@ async function deleteRowsBulk(ids) {
   }
 }
 
+async function deleteDatasetById(datasetId) {
+  const trimmedId = String(datasetId || "").trim();
+  if (!trimmedId) {
+    throw new Error("Missing dataset id");
+  }
+
+  const { data: existingDataset, error: existingDatasetError } = await supabase
+    .from("datasets")
+    .select("id,name")
+    .eq("id", trimmedId)
+    .single();
+
+  if (existingDatasetError) {
+    throw existingDatasetError;
+  }
+
+  const { error: deleteLeadsError } = await supabase
+    .from("leads")
+    .delete()
+    .eq("dataset_id", trimmedId);
+  if (deleteLeadsError) {
+    throw deleteLeadsError;
+  }
+
+  const { error: deleteDatasetError } = await supabase
+    .from("datasets")
+    .delete()
+    .eq("id", trimmedId);
+  if (deleteDatasetError) {
+    throw deleteDatasetError;
+  }
+
+  return existingDataset;
+}
+
 async function updateRowsBatch(updates) {
   // updates is an array of { id, values }
   for (const { id, values } of updates) {
@@ -536,6 +614,142 @@ async function findLeadByBolnaExecutionId(executionId) {
   }
 
   return data || null;
+}
+
+// Helper to find the most likely active Bolna lead by phone when webhook context is missing
+async function findLikelyActiveBolnaLeadByPhone(phoneE164) {
+  if (!phoneE164) return null;
+
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("phone_e164", phoneE164)
+    .eq("call_provider", "bolna")
+    .order("last_call_at", { ascending: false })
+    .limit(3);
+
+  if (error) {
+    console.error("findLikelyActiveBolnaLeadByPhone error:", error.message);
+    return null;
+  }
+
+  const leads = data || [];
+  if (leads.length === 0) return null;
+
+  // Prefer currently active lead to avoid linking a new execution to an old completed call.
+  const active = leads.find((l) => String(l.call_status || "").toLowerCase() === "calling");
+  return active || leads[0] || null;
+}
+
+function buildBolnaWebhookEventSnapshot(payload, receivedAtIso) {
+  const telephonyData = payload?.telephony_data || {};
+  return {
+    received_at: receivedAtIso,
+    execution_id: payload?.execution_id || payload?.id || null,
+    batch_id: payload?.batch_id || null,
+    status: payload?.status || null,
+    conversation_time: payload?.conversation_time ?? payload?.conversation_duration ?? null,
+    answered_by_voice_mail: Boolean(payload?.answered_by_voice_mail),
+    to_number: telephonyData?.to_number || null,
+    from_number: telephonyData?.from_number || null,
+    hangup_reason: telephonyData?.hangup_reason || null,
+    provider_outcome: payload?.outcome || payload?.call_outcome || payload?.disposition_tag || null,
+  };
+}
+
+async function upsertBolnaCallTracking({
+  executionId,
+  lead,
+  leadId,
+  propertyId,
+  phoneE164,
+  status,
+  outcome = null,
+  nextAction = null,
+  durationSec = null,
+  transcript = "",
+  recordingUrl = "",
+  providerOutcomeRaw = null,
+  providerOutcomeNormalized = null,
+  outcomeSource = null,
+  payload,
+  isTerminal,
+}) {
+  const nowIso = new Date().toISOString();
+  const eventSnapshot = buildBolnaWebhookEventSnapshot(payload, nowIso);
+  const trimmedTranscript = typeof transcript === "string" ? transcript.slice(0, 50000) : "";
+
+  if (!executionId) {
+    // If execution_id is missing we cannot conflict-upsert reliably; still persist event.
+    await supabase.from("calls").insert({
+      bolna_execution_id: null,
+      lead_id: leadId || (lead?.lead_id) || null,
+      property_id: propertyId || (lead?.property_id) || null,
+      phone_e164: phoneE164 || (lead?.phone_e164) || null,
+      call_provider: "bolna",
+      status,
+      outcome,
+      next_action: nextAction,
+      duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
+      transcript: trimmedTranscript,
+      recording_url: recordingUrl || null,
+      started_at: nowIso,
+      ended_at: isTerminal ? nowIso : null,
+      raw_webhook: {
+        last_event: payload,
+        bolna_events: [eventSnapshot],
+        provider_outcome_raw: providerOutcomeRaw,
+        provider_outcome_normalized: providerOutcomeNormalized,
+        outcome_source: outcomeSource,
+      },
+    });
+    return;
+  }
+
+  const { data: existing, error: existingErr } = await supabase
+    .from("calls")
+    .select("raw_webhook, started_at, attempt, lead_id, property_id, phone_e164")
+    .eq("bolna_execution_id", executionId)
+    .maybeSingle();
+
+  if (existingErr) {
+    console.error("upsertBolnaCallTracking read existing error:", existingErr.message);
+  }
+
+  const existingRaw = existing?.raw_webhook && typeof existing.raw_webhook === "object" ? existing.raw_webhook : {};
+  const existingEvents = Array.isArray(existingRaw.bolna_events) ? existingRaw.bolna_events : [];
+  const mergedEvents = [...existingEvents, eventSnapshot].slice(-50);
+
+  await supabase
+    .from("calls")
+    .upsert(
+      {
+        bolna_execution_id: executionId,
+        lead_id: leadId || existing?.lead_id || (lead?.lead_id) || null,
+        property_id: propertyId || existing?.property_id || (lead?.property_id) || null,
+        phone_e164: phoneE164 || existing?.phone_e164 || (lead?.phone_e164) || null,
+        call_provider: "bolna",
+        status,
+        outcome,
+        next_action: nextAction,
+        attempt: existing?.attempt || null,
+        duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
+        transcript: trimmedTranscript,
+        recording_url: recordingUrl || null,
+        started_at: existing?.started_at || nowIso,
+        ended_at: isTerminal ? nowIso : null,
+        raw_webhook: {
+          ...existingRaw,
+          batch_id: payload?.batch_id || existingRaw.batch_id || null,
+          last_event: payload,
+          bolna_events: mergedEvents,
+          provider_outcome_raw: providerOutcomeRaw ?? existingRaw.provider_outcome_raw ?? null,
+          provider_outcome_normalized: providerOutcomeNormalized ?? existingRaw.provider_outcome_normalized ?? null,
+          outcome_source: outcomeSource ?? existingRaw.outcome_source ?? null,
+        },
+      },
+      { onConflict: "bolna_execution_id" }
+    );
 }
 
 // Helper to find lead by bland_call_id
@@ -597,6 +811,87 @@ const BolnaWebhookSchema = z.object({
   user_data: z.record(z.any()).nullable().optional(),
 }).passthrough();
 
+function hasDisinterestSignal(text = "") {
+  const t = String(text || "").toLowerCase();
+  return (
+    t.includes("not interested") ||
+    t.includes("no interest") ||
+    t.includes("not looking") ||
+    t.includes("don't want") ||
+    t.includes("do not want") ||
+    t.includes("don't need") ||
+    t.includes("do not need") ||
+    t.includes("no thanks") ||
+    t.includes("not now") ||
+    t.includes("not right now") ||
+    t.includes("nahi") ||
+    t.includes("nahin") ||
+    t.includes("nhi")
+  );
+}
+
+function hasStrongInterestSignal(text = "") {
+  const t = String(text || "").toLowerCase();
+  if (hasDisinterestSignal(t)) return false;
+  return (
+    t.includes("expressed interest") ||
+    t.includes("interested in learning more") ||
+    t.includes("schedule a visit") ||
+    t.includes("arrange a visit") ||
+    t.includes("coordinate a visit") ||
+    t.includes("site visit") ||
+    t.includes("book a visit") ||
+    t.includes("share details") ||
+    t.includes("send details")
+  );
+}
+
+function normalizeOutcomeLabel(value) {
+  const t = String(value || "").trim().toLowerCase();
+  if (!t) return null;
+  if (["interested"].includes(t)) return "interested";
+  if (["not_interested", "not interested", "not-interest", "disinterested"].includes(t)) return "not_interested";
+  if (["opt_out", "opt out", "dnc", "do not call"].includes(t)) return "opt_out";
+  if (["no_answer", "no answer", "no-answer", "unanswered", "busy"].includes(t)) return "no_answer";
+  if (["voicemail", "voice_mail", "voice mail"].includes(t)) return "voicemail";
+  if (["human_followup", "human followup", "followup", "follow_up"].includes(t)) return "human_followup";
+  return null;
+}
+
+function extractBolnaProviderOutcome(payload = {}) {
+  const candidates = [
+    payload?.outcome,
+    payload?.call_outcome,
+    payload?.disposition_tag,
+    payload?.result?.outcome,
+    payload?.analysis?.outcome,
+    payload?.extracted_data?.outcome,
+    payload?.extracted_data?.call_outcome,
+    payload?.extracted_data?.disposition,
+    payload?.extracted_data?.lead_status,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return null;
+}
+
+function defaultNextActionForOutcome(outcome) {
+  switch (outcome) {
+    case "opt_out":
+    case "not_interested":
+      return "none";
+    case "no_answer":
+    case "voicemail":
+      return "call_back_later";
+    case "interested":
+    case "human_followup":
+    default:
+      return "human_followup";
+  }
+}
+
 function classifyOutcome({ answeredBy, summary, transcript, completed, callLength, dispositionTag }) {
   // Use Bland's disposition_tag if available (Bland's own classification)
   if (dispositionTag) {
@@ -607,7 +902,7 @@ function classifyOutcome({ answeredBy, summary, transcript, completed, callLengt
       return { outcome: "interested", next_action: "human_followup" };
     }
     if (dispositionLower === "not_interested" || dispositionLower === "not interested") {
-      return { outcome: "human_followup", next_action: "human_followup" };
+      return { outcome: "not_interested", next_action: "none" };
     }
     if (dispositionLower === "opt_out" || dispositionLower === "opt out") {
       return { outcome: "opt_out", next_action: "none" };
@@ -641,22 +936,22 @@ function classifyOutcome({ answeredBy, summary, transcript, completed, callLengt
     return { outcome: "opt_out", next_action: "none" };
   }
 
+  // Explicit disinterest should never be promoted to interested.
+  if (hasDisinterestSignal(text)) {
+    return { outcome: "not_interested", next_action: "none" };
+  }
+
   // If there's a conversation, analyze it regardless of answered_by value
   // "unknown" can still mean a human answered, just not detected
   if (hasConversation) {
     // Strong "interested" signals
     if (
-      text.includes("agreed") &&
-      (text.includes("walkthrough") || text.includes("visit") || text.includes("showing"))
+      (
+        text.includes("agreed") &&
+        (text.includes("walkthrough") || text.includes("visit") || text.includes("showing"))
+      ) ||
+      hasStrongInterestSignal(text)
     ) {
-      return { outcome: "interested", next_action: "human_followup" };
-    }
-    if (text.includes("coordinate a visit") || text.includes("arrange a visit")) {
-      return { outcome: "interested", next_action: "human_followup" };
-    }
-    
-    // Check for interest in the summary (from the webhook payload example)
-    if (text.includes("expressed interest") || text.includes("interested in learning more")) {
       return { outcome: "interested", next_action: "human_followup" };
     }
 
@@ -958,12 +1253,125 @@ async function startBolnaCall({ phone, userData }) {
   return result;
 }
 
+// -------------------- Start Bolna batch (Hinglish) --------------------
+function buildBolnaBatchCsv(leads) {
+  const header = [
+    "contact_number",
+    "lead_name",
+    "phone_e164",
+    "property_name",
+    "lead_id",
+    "property_id",
+    "id",
+  ];
+
+  const escapeCsv = (value) => {
+    const stringValue = String(value ?? "");
+    const escaped = stringValue.replace(/"/g, "\"\"");
+    return `"${escaped}"`;
+  };
+
+  const rows = leads.map((row) => ([
+    row.phone_e164 || "",
+    row.lead_name || "",
+    row.phone_e164 || "",
+    row.property_name || "Tulip Monsella",
+    row.lead_id || "",
+    row.property_id || "",
+    row.id || "",
+  ]).map(escapeCsv).join(","));
+
+  return [header.join(","), ...rows].join("\n");
+}
+
+async function createBolnaBatch({ leads }) {
+  const csvContent = buildBolnaBatchCsv(leads);
+  const form = new FormData();
+
+  form.append("agent_id", process.env.BOLNA_AGENT_ID);
+  form.append("file", new Blob([csvContent], { type: "text/csv" }), "homeseek-bolna-batch.csv");
+
+  const resp = await fetch("https://api.bolna.ai/batches", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.BOLNA_API_KEY}`,
+    },
+    body: form,
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Bolna create batch failed: ${resp.status} ${txt}`);
+  }
+
+  const result = await resp.json();
+  const batchId = result.batch_id || result.id || result.data?.batch_id || "";
+  if (!batchId) {
+    throw new Error(`Bolna create batch response missing batch_id: ${JSON.stringify(result).slice(0, 300)}`);
+  }
+
+  return { batchId, raw: result };
+}
+
+function getBolnaBatchScheduledAt(delaySeconds = BOLNA_BATCH_SCHEDULE_DELAY_SECONDS) {
+  const targetDate = new Date(Date.now() + Math.max(Number(delaySeconds) || 0, BOLNA_MIN_SCHEDULE_SECONDS) * 1000);
+  // Bolna schedule endpoint currently rejects "Z" suffix in some environments.
+  // Send Python fromisoformat-friendly UTC offset (+00:00) without milliseconds.
+  return targetDate.toISOString().replace(/\.\d{3}Z$/, "+00:00");
+}
+
+async function scheduleBolnaBatch({ batchId, scheduledAt }) {
+  const trySchedule = async (isoTime) => {
+    const form = new FormData();
+    form.append("scheduled_at", isoTime);
+
+    const resp = await fetch(`https://api.bolna.ai/batches/${batchId}/schedule`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.BOLNA_API_KEY}`,
+      },
+      body: form,
+    });
+
+    if (!resp.ok) {
+      const txt = await resp.text();
+      const error = new Error(`Bolna schedule batch failed: ${resp.status} ${txt}`);
+      error.status = resp.status;
+      error.responseText = txt;
+      error.scheduledAt = isoTime;
+      throw error;
+    }
+
+    const json = await resp.json();
+    return { scheduledAt: isoTime, raw: json };
+  };
+
+  try {
+    return await trySchedule(scheduledAt);
+  } catch (err) {
+    const message = String(err?.responseText || err?.message || "");
+    const isTooSoonError = err?.status === 400 && /atleast 2 minutes in the future/i.test(message);
+    const isIsoFormatError = /Invalid isoformat string/i.test(message);
+    if (!isTooSoonError && !isIsoFormatError) throw err;
+
+    // Retry once with extra buffer and strict +00:00 format.
+    const retryScheduledAt = getBolnaBatchScheduledAt(240);
+    console.warn(`Bolna schedule retry with compatible timestamp: ${retryScheduledAt}`);
+    return await trySchedule(retryScheduledAt);
+  }
+}
+
 // -------------------- Routes --------------------
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Serve index.html for root path
 app.get("/", (req, res) => {
   res.sendFile("index.html", { root: "public" });
+});
+
+// Main leads dashboard page
+app.get("/dashboard", (req, res) => {
+  res.sendFile("dashboard.html", { root: "public" });
 });
 
 // --- Auth routes (no auth required) ---
@@ -994,7 +1402,7 @@ app.post("/auth/login", (req, res) => {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? "none" : "lax",
-    maxAge: SESSION_MAX_AGE_MS / 1000,
+    maxAge: SESSION_MAX_AGE_MS,
     path: "/",
   });
   res.status(200).json({ ok: true, message: "Logged in" });
@@ -1057,7 +1465,7 @@ app.post("/auth/verify-otp", async (req, res) => {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? "none" : "lax",
-    maxAge: SESSION_MAX_AGE_MS / 1000,
+    maxAge: SESSION_MAX_AGE_MS,
     path: "/",
   });
   res.json({ ok: true, message: "Logged in" });
@@ -1066,6 +1474,83 @@ app.post("/auth/verify-otp", async (req, res) => {
 app.post("/auth/logout", (req, res) => {
   res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
   res.json({ ok: true });
+});
+
+// Dataset library endpoint for landing-page tiles
+app.get("/datasets", async (req, res) => {
+  try {
+    const [{ data: datasets, error: datasetError }, { data: leadRows, error: leadError }] = await Promise.all([
+      supabase
+        .from("datasets")
+        .select("id,name,source_filename,uploaded_by,uploaded_at,row_count,status,notes,created_at")
+        .order("uploaded_at", { ascending: false }),
+      supabase.from("leads").select("dataset_id"),
+    ]);
+
+    if (datasetError) throw datasetError;
+    if (leadError) throw leadError;
+
+    const datasetCountMap = new Map();
+    let initialDataCount = 0;
+
+    for (const row of leadRows || []) {
+      if (!row.dataset_id) {
+        initialDataCount++;
+        continue;
+      }
+      datasetCountMap.set(row.dataset_id, (datasetCountMap.get(row.dataset_id) || 0) + 1);
+    }
+
+    const normalizedDatasets = (datasets || []).map((d) => ({
+      ...d,
+      row_count: datasetCountMap.get(d.id) || 0,
+    }));
+
+    return res.json({
+      ok: true,
+      initial_data: {
+        id: "initial",
+        name: "Initial Data",
+        row_count: initialDataCount,
+      },
+      datasets: normalizedDatasets,
+    });
+  } catch (err) {
+    console.error("get datasets failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
+ * DELETE /datasets/:id
+ * Deletes a dataset and all leads linked to it.
+ */
+app.delete("/datasets/:id", async (req, res) => {
+  try {
+    const datasetId = String(req.params?.id || "").trim();
+    if (!datasetId) {
+      return res.status(400).json({ ok: false, error: "Missing dataset id" });
+    }
+    if (datasetId === "initial") {
+      return res.status(400).json({ ok: false, error: "Initial Data cannot be deleted as a dataset" });
+    }
+
+    const deletedDataset = await deleteDatasetById(datasetId);
+    console.log(`DELETE /datasets/${datasetId} - deleted dataset "${deletedDataset.name}"`);
+    return res.json({
+      ok: true,
+      id: datasetId,
+      dataset_name: deletedDataset.name,
+      message: "Dataset deleted successfully",
+    });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (/0 rows|No rows|not found/i.test(msg)) {
+      return res.status(404).json({ ok: false, error: "Dataset not found" });
+    }
+    console.error("delete dataset failed:", err);
+    return res.status(500).json({ ok: false, error: msg });
+  }
 });
 
 // Auth is only used for the login screen (frontend shows app after login).
@@ -1264,10 +1749,11 @@ app.post("/trigger-call", async (req, res) => {
  */
 app.get("/rows", async (req, res) => {
   try {
-    console.log("GET /rows - fetching rows...");
-    const { headers, rows } = await readAllRows();
-    console.log(`GET /rows - found ${headers?.length || 0} headers, ${rows?.length || 0} rows`);
-    return res.json({ ok: true, headers: headers || [], rows: rows || [] });
+    const datasetIdRaw = typeof req.query?.dataset_id === "string" ? req.query.dataset_id.trim() : "";
+    const datasetId = datasetIdRaw || null;
+    console.log(`GET /rows - fetching rows${datasetId ? ` for dataset ${datasetId}` : ""}...`);
+    const { headers, rows } = await readAllRows(datasetId);
+    return res.json({ ok: true, dataset_id: datasetId, headers: headers || [], rows: rows || [] });
   } catch (err) {
     console.error("get rows failed:", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -1361,6 +1847,27 @@ function normalizePhoneForIndia(phone) {
   return null;
 }
 
+function normalizeCsvHeader(header) {
+  return String(header || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function formatCsvHeaders(headers = []) {
+  const cleaned = headers
+    .map(h => String(h || "").trim())
+    .filter(Boolean);
+  return cleaned.length > 0 ? cleaned.join(", ") : "(none)";
+}
+
+function buildNormalizedCsvRow(row) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(row || {})) {
+    const normalizedKey = normalizeCsvHeader(key);
+    if (!normalizedKey) continue;
+    normalized[normalizedKey] = value;
+  }
+  return normalized;
+}
+
 /**
  * POST /upload-csv
  * Accepts a CSV file via multipart/form-data and imports leads.
@@ -1378,16 +1885,57 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
       return res.status(400).json({ ok: false, error: "No CSV file provided" });
     }
 
-    // Parse CSV
+    // Parse CSV and validate header row first so we can return precise errors.
     const csvContent = req.file.buffer.toString("utf8");
+    let rawRows;
     let records;
-    
+
+    try {
+      rawRows = parse(csvContent, {
+        columns: false,
+        skip_empty_lines: true,
+        trim: true,
+        relax_column_count: true, // Allow extra columns
+        bom: true,
+      });
+    } catch (parseError) {
+      console.error("CSV header parse error:", parseError);
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid CSV format: ${parseError.message}`,
+      });
+    }
+
+    if (!Array.isArray(rawRows) || rawRows.length === 0) {
+      return res.status(400).json({ ok: false, error: "CSV file is empty" });
+    }
+
+    const receivedHeaders = Array.isArray(rawRows[0]) ? rawRows[0].map(h => String(h || "").trim()) : [];
+    const normalizedHeaders = new Set(receivedHeaders.map(normalizeCsvHeader).filter(Boolean));
+
+    if (normalizedHeaders.size === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "CSV header row is empty. Expected headers like: Name, Mobile Number, Email, Date, Interested in.",
+      });
+    }
+
+    const mobileHeaderAliases = ["mobile number", "mobile", "phone", "phone number"];
+    const hasMobileHeader = mobileHeaderAliases.some(alias => normalizedHeaders.has(alias));
+    if (!hasMobileHeader) {
+      return res.status(400).json({
+        ok: false,
+        error: `CSV is missing required phone header. Expected one of: Mobile Number, Mobile, Phone, Phone Number. Received: ${formatCsvHeaders(receivedHeaders)}.`,
+      });
+    }
+
     try {
       records = parse(csvContent, {
         columns: true,
         skip_empty_lines: true,
         trim: true,
         relax_column_count: true, // Allow extra columns
+        bom: true,
       });
     } catch (parseError) {
       console.error("CSV parse error:", parseError);
@@ -1398,21 +1946,31 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
       return res.status(400).json({ ok: false, error: "CSV file is empty or has no valid rows" });
     }
 
-    // Get headers to determine column mapping
-    const headers = await getHeaders();
-    
+    const rawDatasetName = String(req.body?.dataset_name || "").trim();
+    const sourceFilename = req.file.originalname || null;
+    const fallbackName = sourceFilename ? sourceFilename.replace(/\.[^.]+$/, "") : `Dataset ${new Date().toISOString().slice(0, 10)}`;
+    const datasetName = rawDatasetName || fallbackName;
+
+    const dataset = await createDataset({
+      name: datasetName,
+      sourceFilename,
+      uploadedBy: LOGIN_USERNAME || "system",
+      rowCount: 0,
+      status: "active",
+    });
+
     let inserted = 0;
     let skipped = 0;
     const errors = [];
 
     // Process each row
     for (let i = 0; i < records.length; i++) {
-      const row = records[i];
-      
-      // Extract required fields (case-insensitive matching)
-      const name = row["Name"] || row["name"] || "";
-      const mobileNumber = row["Mobile Number"] || row["mobile number"] || row["Mobile"] || row["mobile"] || "";
-      const email = row["Email"] || row["email"] || "";
+      const row = buildNormalizedCsvRow(records[i]);
+
+      // Extract required fields using normalized header names.
+      const name = row["name"] || "";
+      const mobileNumber = row["mobile number"] || row["mobile"] || row["phone"] || row["phone number"] || "";
+      const email = row["email"] || "";
       // Date and Interested in are not stored, but we read them for validation if needed
       
       // Normalize phone number
@@ -1431,6 +1989,8 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
         email: email.trim() || "",
         call_status: "queued",
         call_attempts: 0,
+        dataset_id: dataset.id,
+        source_row_number: i + 2,
       };
 
       try {
@@ -1443,10 +2003,14 @@ app.post("/upload-csv", upload.single("csv"), async (req, res) => {
       }
     }
 
-    console.log(`POST /upload-csv - inserted: ${inserted}, skipped: ${skipped}`);
+    await supabase.from("datasets").update({ row_count: inserted }).eq("id", dataset.id);
+
+    console.log(`POST /upload-csv - dataset=${dataset.id}, inserted=${inserted}, skipped=${skipped}`);
 
     return res.json({
       ok: true,
+      dataset_id: dataset.id,
+      dataset_name: dataset.name,
       inserted,
       skipped,
       errors: errors.length > 0 ? errors : undefined,
@@ -1556,11 +2120,11 @@ app.delete("/delete-rows-bulk", async (req, res) => {
  */
 app.post("/run-dialer", async (req, res) => {
   try {
-    const { limit = 5, bolna_ratio = 0 } = req.body;
+    const { limit = 5, bolna_ratio = 0, dataset_id = null } = req.body;
     const maxRows = Math.min(Math.max(Number(limit), 1), 50);
     const bolnaPercent = Math.min(Math.max(Number(bolna_ratio), 0), 100);
 
-    const { rows } = await readAllRows();
+    const { rows } = await readAllRows(dataset_id || null);
 
     // Filter leads that are ready to call
     const queued = rows
@@ -1582,70 +2146,63 @@ app.post("/run-dialer", async (req, res) => {
 
     const startedAt = new Date().toISOString();
     let bolnaSuccessCount = 0;
+    let bolnaBatchId = null;
     let blandBatchId = null;
 
     // -------------------- BOLNA CALLS (Hinglish) --------------------
-    // Bolna doesn't have a simple batch API like Bland, so we make individual calls
+    // Use Bolna Batch API for bulk outbound calls.
     if (bolnaLeads.length > 0) {
-      console.log(`Starting ${bolnaLeads.length} Bolna calls...`);
+      console.log(`Starting Bolna batch for ${bolnaLeads.length} leads...`);
 
+      // Optimistically mark all selected Bolna leads as calling.
       for (const row of bolnaLeads) {
-        try {
+        const attempts = Number(row.call_attempts || 0) + 1;
+        await updateRow(row.id, {
+          call_status: "calling",
+          call_attempts: attempts,
+          last_call_at: startedAt,
+          call_provider: "bolna",
+        });
+      }
+
+      try {
+        const created = await createBolnaBatch({ leads: bolnaLeads });
+        bolnaBatchId = created.batchId;
+        const bolnaScheduledAt = getBolnaBatchScheduledAt();
+        const scheduleResult = await scheduleBolnaBatch({ batchId: bolnaBatchId, scheduledAt: bolnaScheduledAt });
+
+        // Track call attempts in history table. execution_id is unknown until webhooks arrive.
+        for (const row of bolnaLeads) {
           const attempts = Number(row.call_attempts || 0) + 1;
-
-          // Mark as calling
-          await updateRow(row.id, {
-            call_status: "calling",
-            call_attempts: attempts,
-            last_call_at: startedAt,
-            call_provider: "bolna",
-          });
-
-          // Prepare user_data for Bolna
-          const userData = {
-            lead_name: row.lead_name || "",
-            phone_e164: row.phone_e164,
-            property_name: row.property_name || "Tulip Monsella",
-            lead_id: row.lead_id || "",
-            property_id: row.property_id || "",
-            id: row.id, // Supabase UUID for webhook lookup
-          };
-
-          const bolnaResp = await startBolnaCall({
-            phone: row.phone_e164,
-            userData,
-          });
-
-          const executionId = bolnaResp.execution_id || "";
-
-          // Save execution_id to lead
-          await updateRow(row.id, {
-            bolna_execution_id: executionId,
-          });
-
-          // Save to calls table for history
           await supabase.from("calls").insert({
             lead_id: row.lead_id || null,
             property_id: row.property_id || null,
             phone_e164: row.phone_e164,
-            bolna_execution_id: executionId || null,
+            bolna_execution_id: null,
             call_provider: "bolna",
             status: "calling",
             outcome: null,
             next_action: null,
             attempt: attempts,
             started_at: startedAt,
-            raw_webhook: { started_response: bolnaResp },
+            raw_webhook: {
+              bolna_batch_id: bolnaBatchId,
+              bolna_scheduled_at: scheduleResult.scheduledAt,
+              batch_create_response: created.raw,
+              batch_schedule_response: scheduleResult.raw,
+            },
           });
+        }
 
-          bolnaSuccessCount++;
-        } catch (bolnaErr) {
-          console.error(`Bolna call failed for ${row.phone_e164}:`, bolnaErr);
+        bolnaSuccessCount = bolnaLeads.length;
+      } catch (bolnaBatchErr) {
+        console.error("Bolna batch failed:", bolnaBatchErr);
 
-          // Mark as failed
+        // Roll selected Bolna leads back to failed if batch creation/scheduling fails.
+        for (const row of bolnaLeads) {
           await updateRow(row.id, {
             call_status: "failed",
-            notes: `Bolna call failed: ${String(bolnaErr.message || bolnaErr)}`,
+            notes: `Bolna batch failed: ${String(bolnaBatchErr.message || bolnaBatchErr)}`,
           });
         }
       }
@@ -1724,6 +2281,7 @@ app.post("/run-dialer", async (req, res) => {
       ok: true,
       processed: queued.length,
       bolna_calls: bolnaSuccessCount,
+      bolna_batch_id: bolnaBatchId,
       bland_calls: blandLeads.length,
       bland_batch_id: blandBatchId,
       message: `Started ${bolnaSuccessCount} Bolna (Hinglish) + ${blandLeads.length} Bland (English) calls`
@@ -1772,6 +2330,7 @@ app.post("/webhooks/bland", async (req, res) => {
     // Determine call_status based on outcome
     const callStatusMap = {
       "opt_out": "opt_out",
+      "not_interested": "completed",
       "no_answer": "no_answer",
       "voicemail": "voicemail",
       "interested": "completed",
@@ -1875,19 +2434,18 @@ app.post("/webhooks/bolna", async (req, res) => {
     const recordingUrl = telephonyData.recording_url || "";
     const answeredByVoicemail = payload.answered_by_voice_mail || false;
     const hangupReason = telephonyData.hangup_reason || "";
+    const providerOutcomeRaw = extractBolnaProviderOutcome(payload);
+    const providerOutcomeNormalized = normalizeOutcomeLabel(providerOutcomeRaw);
 
     // Extract context_details which contains our user_data variables
     const contextDetails = payload.context_details || payload.user_data || {};
     const leadId = contextDetails.lead_id || "";
     const propertyId = contextDetails.property_id || "";
     const supabaseId = contextDetails.id || null; // Supabase UUID
+    const phoneE164 = telephonyData.to_number || contextDetails.phone_e164 || "";
+    const batchId = payload.batch_id || "";
 
     const isTerminal = BOLNA_TERMINAL_STATUSES.includes(status);
-
-    if (!isTerminal) {
-      console.log(`Bolna webhook: execution_id=${executionId}, status=${status} (transient, skipping lead/calls update)`);
-      return res.status(200).send("ok");
-    }
 
     // Find lead by id from context, or by bolna_execution_id
     let lead = null;
@@ -1897,9 +2455,18 @@ app.post("/webhooks/bolna", async (req, res) => {
     if (!lead && executionId) {
       lead = await findLeadByBolnaExecutionId(executionId);
     }
+    if (!lead && leadId) {
+      lead = await readRow(leadId).catch(() => null);
+    }
+    if (!lead && phoneE164) {
+      lead = await findLikelyActiveBolnaLeadByPhone(phoneE164);
+    }
 
     if (!lead) {
-      console.warn(`Bolna webhook: no lead found (execution_id=${executionId})`);
+      console.warn(`Bolna webhook: no lead found (execution_id=${executionId}, batch_id=${batchId}, phone=${phoneE164})`);
+    } else if (executionId && !lead.bolna_execution_id) {
+      // Persist execution_id as early as possible to improve future webhook correlation.
+      await updateRow(lead.id, { bolna_execution_id: executionId });
     }
 
     // Map Bolna status to answered_by for classifyOutcome
@@ -1925,21 +2492,47 @@ app.post("/webhooks/bolna", async (req, res) => {
     // Override outcome based on Bolna-specific status
     let finalOutcome = outcome;
     let finalNextAction = next_action;
+    let outcomeSource = "local_classifier";
+    const bolnaText = String(transcript || "").toLowerCase();
 
     if (status === "no-answer" || status === "busy") {
       finalOutcome = "no_answer";
       finalNextAction = "call_back_later";
+      outcomeSource = "status_mapping";
     } else if (answeredByVoicemail) {
       finalOutcome = "voicemail";
       finalNextAction = "call_back_later";
+      outcomeSource = "status_mapping";
+    } else if ((status === "completed" || status === "call-disconnected") && providerOutcomeNormalized) {
+      // Trust provider outcome when present, but keep hard safety override below.
+      finalOutcome = providerOutcomeNormalized;
+      finalNextAction = defaultNextActionForOutcome(providerOutcomeNormalized);
+      outcomeSource = "provider_outcome";
     } else if ((status === "completed" || status === "call-disconnected") && transcript && finalOutcome === "human_followup") {
-      finalOutcome = "interested";
-      finalNextAction = "human_followup";
+      if (hasDisinterestSignal(bolnaText)) {
+        finalOutcome = "not_interested";
+        finalNextAction = "none";
+        outcomeSource = "disinterest_signal";
+      } else if (hasStrongInterestSignal(bolnaText)) {
+        finalOutcome = "interested";
+        finalNextAction = "human_followup";
+        outcomeSource = "interest_signal";
+      }
+    }
+
+    // Hard guardrail: explicit disinterest in transcript always wins.
+    if ((status === "completed" || status === "call-disconnected") && hasDisinterestSignal(bolnaText)) {
+      finalOutcome = "not_interested";
+      finalNextAction = "none";
+      outcomeSource = providerOutcomeNormalized === "interested"
+        ? "disinterest_override_provider_interested"
+        : "disinterest_signal";
     }
 
     // Determine call_status based on outcome
     const callStatusMap = {
       "opt_out": "opt_out",
+      "not_interested": "completed",
       "no_answer": "no_answer",
       "voicemail": "voicemail",
       "interested": "completed",
@@ -1947,46 +2540,57 @@ app.post("/webhooks/bolna", async (req, res) => {
     };
     const callStatus = callStatusMap[finalOutcome] || "completed";
 
-    console.log(`Bolna webhook: execution_id=${executionId}, status=${status}, outcome=${finalOutcome}`);
+    console.log(
+      `Bolna webhook: execution_id=${executionId}, status=${status}, terminal=${isTerminal}, provider_outcome=${providerOutcomeRaw || "none"}, normalized_provider_outcome=${providerOutcomeNormalized || "none"}, final_outcome=${finalOutcome}, source=${outcomeSource}`
+    );
 
-    // Update lead only on terminal status
+    // Track every webhook event in calls table (transient + terminal).
+    await upsertBolnaCallTracking({
+      executionId,
+      lead,
+      leadId,
+      propertyId,
+      phoneE164,
+      status,
+      outcome: isTerminal ? finalOutcome : null,
+      nextAction: isTerminal ? finalNextAction : null,
+      durationSec,
+      transcript,
+      recordingUrl,
+      providerOutcomeRaw,
+      providerOutcomeNormalized,
+      outcomeSource,
+      payload: req.body,
+      isTerminal,
+    });
+
+    // Update lead on every status with safe minimal fields;
+    // only set final outcome/action for terminal statuses.
     if (lead) {
-      await updateRow(lead.id, {
-        call_status: callStatus,
-        outcome: finalOutcome,
-        next_action: finalNextAction,
-        bolna_execution_id: executionId,
+      const leadUpdate = {
+        bolna_execution_id: executionId || lead.bolna_execution_id || null,
+        call_provider: "bolna",
         last_call_at: new Date().toISOString(),
-        recording_url: recordingUrl,
-        transcript: transcript,
-        notes: `Bolna call - ${hangupReason || status}`,
-      });
+      };
+
+      if (isTerminal) {
+        leadUpdate.call_status = callStatus;
+        leadUpdate.outcome = finalOutcome;
+        leadUpdate.next_action = finalNextAction;
+        leadUpdate.recording_url = recordingUrl;
+        leadUpdate.transcript = transcript;
+        leadUpdate.notes = `Bolna call - ${hangupReason || status}`;
+      } else {
+        // Keep UI and tracking in sync for in-flight statuses.
+        leadUpdate.call_status = "calling";
+        leadUpdate.notes = `Bolna in-progress - ${status}`;
+      }
+
+      await updateRow(lead.id, leadUpdate);
     }
 
-    // Upsert calls table for history (only on terminal so we store final outcome)
-    await supabase
-      .from("calls")
-      .upsert(
-        {
-          bolna_execution_id: executionId,
-          lead_id: leadId || (lead?.lead_id) || null,
-          property_id: propertyId || (lead?.property_id) || null,
-          phone_e164: telephonyData.to_number || (lead?.phone_e164) || null,
-          call_provider: "bolna",
-          status,
-          outcome: finalOutcome,
-          next_action: finalNextAction,
-          duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
-          transcript,
-          recording_url: recordingUrl,
-          raw_webhook: req.body,
-          ended_at: new Date().toISOString(),
-        },
-        { onConflict: "bolna_execution_id" }
-      );
-
     // WhatsApp Hot Lead Alert (only on terminal with interested)
-    if (finalOutcome === "interested" && lead) {
+    if (isTerminal && finalOutcome === "interested" && lead) {
       sendWhatsAppHotLeadAlert({
         leadName: lead.lead_name || contextDetails.lead_name || "",
         phoneE164: telephonyData.to_number || lead.phone_e164 || "",
