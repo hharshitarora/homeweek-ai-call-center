@@ -1,0 +1,3 @@
+# Railway/Nixpacks: use modern npm flag to avoid "Use --omit=dev instead" warning
+[phases.install]
+cmds = ["npm ci --omit=dev"]
