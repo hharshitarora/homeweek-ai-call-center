@@ -1,6 +1,6 @@
 /**
  * server.js — Phase 2: Supabase as primary database
- * Node + Express + Supabase + Bland + Bolna
+ * Node + Express + Supabase + Bolna + Ringg AI
  *
  * Endpoints:
  *   GET  /health
@@ -9,17 +9,23 @@
  *   POST /add-row
  *   POST /upload-csv
  *   PUT  /update-row
+ *   PUT  /update-rows-bulk
  *   DELETE /delete-row
  *   DELETE /delete-rows-bulk
- *   POST /trigger-call        - Single call (supports provider: "bland" | "bolna"); auth: session cookie or API key (TRIGGER_API_KEY / API_KEY)
- *   POST /run-dialer          - Bulk calls (supports bolna_ratio for A/B testing); same auth as trigger-call
- *   POST /webhooks/bland      - Bland call completion webhook
+ *   POST /trigger-call        - Single call (Bolna or Ringg); auth: session cookie or API key (TRIGGER_API_KEY / API_KEY)
+ *   POST /run-dialer          - Bulk calls (Bolna only); same auth as trigger-call
  *   POST /webhooks/bolna      - Bolna call completion webhook
+ *   POST /webhooks/ringg      - Ringg AI call event webhooks
  */
 
 import "dotenv/config";
+import path from "path";
+import { fileURLToPath } from "url";
 import crypto from "crypto";
 import express from "express";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
@@ -59,7 +65,6 @@ if (IS_DEV) {
 const REQUIRED_ENVS = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "BLAND_API_KEY",
   "BOLNA_API_KEY",
   "BOLNA_AGENT_ID",
 ];
@@ -78,15 +83,14 @@ for (const k of REQUIRED_ENVS) {
 
 // Determine webhook URL: use env var, or localhost in dev mode
 const PUBLIC_WEBHOOK_URL = process.env.PUBLIC_WEBHOOK_URL || 
-  (IS_DEV ? `http://localhost:${PORT}/webhooks/bland` : null);
+  (IS_DEV ? `http://localhost:${PORT}/webhooks/bolna` : null);
 
 if (!PUBLIC_WEBHOOK_URL) {
   console.error("Missing PUBLIC_WEBHOOK_URL");
   process.exit(1);
 }
 
-// Derive Bolna webhook URL from the same base domain
-const BOLNA_WEBHOOK_URL = PUBLIC_WEBHOOK_URL.replace('/webhooks/bland', '/webhooks/bolna');
+const BOLNA_WEBHOOK_URL = PUBLIC_WEBHOOK_URL;
 
 // Bolna requires batch schedule time to be at least 2 minutes in the future.
 // Keep a buffer for clock skew / provider-side validation.
@@ -96,8 +100,16 @@ const BOLNA_BATCH_SCHEDULE_DELAY_SECONDS = Math.max(
   BOLNA_MIN_SCHEDULE_SECONDS
 );
 
-console.log(`📡 Bland Webhook URL: ${PUBLIC_WEBHOOK_URL}`);
 console.log(`📡 Bolna Webhook URL: ${BOLNA_WEBHOOK_URL}`);
+
+// -------------------- Ringg AI Config --------------------
+// Optional: set RINGG_API_KEY, RINGG_AGENT_ID, RINGG_FROM_NUMBER_ID to enable Ringg provider.
+const RINGG_ENABLED = Boolean(process.env.RINGG_API_KEY && process.env.RINGG_AGENT_ID && process.env.RINGG_FROM_NUMBER_ID);
+if (RINGG_ENABLED) {
+  console.log("📡 Ringg AI provider enabled");
+} else {
+  console.log("ℹ️  Ringg AI provider disabled (set RINGG_API_KEY, RINGG_AGENT_ID, RINGG_FROM_NUMBER_ID to enable)");
+}
 
 // -------------------- WhatsApp Notification Config --------------------
 // Optional env vars for WhatsApp alerts (Twilio)
@@ -373,15 +385,12 @@ function requireAuth(req, res, next) {
 }
 
 const PROTECTED_PATHS = [
-  "/rows", "/headers", "/add-row", "/update-row", "/delete-row", "/delete-rows-bulk",
+  "/rows", "/headers", "/add-row", "/update-row", "/update-rows-bulk", "/delete-row", "/delete-rows-bulk",
   "/trigger-call", "/run-dialer", "/upload-csv",
 ];
 function isProtectedPath(path) {
   return PROTECTED_PATHS.some((p) => path === p || path.startsWith(p + "?"));
 }
-
-// -------------------- Defaults --------------------
-const DEFAULT_VOICE_ID = "095a1518-ecdf-4870-a5ff-c74b43a08764";
 
 // -------------------- Supabase Data Functions --------------------
 // These replace the old Google Sheets functions
@@ -555,6 +564,26 @@ async function deleteRowsBulk(ids) {
 
   if (error) {
     console.error("deleteRowsBulk error:", error.message);
+    throw error;
+  }
+}
+
+async function updateRowsBulk(ids, updates) {
+  if (!ids || ids.length === 0) {
+    return;
+  }
+
+  const cleanUpdates = { ...updates };
+  delete cleanUpdates.id;
+  delete cleanUpdates.created_at;
+
+  const { error } = await supabase
+    .from("leads")
+    .update(cleanUpdates)
+    .in("id", ids);
+
+  if (error) {
+    console.error("updateRowsBulk error:", error.message);
     throw error;
   }
 }
@@ -752,45 +781,177 @@ async function upsertBolnaCallTracking({
     );
 }
 
-// Helper to find lead by bland_call_id
-async function findLeadByBlandCallId(callId) {
+// -------------------- Ringg AI call helpers --------------------
+
+async function startRinggCall({ phone, name, customArgs }) {
+  const callPayload = {
+    name: name || "Lead",
+    mobile_number: phone,
+    agent_id: process.env.RINGG_AGENT_ID,
+    from_number_id: process.env.RINGG_FROM_NUMBER_ID,
+    custom_args_values: customArgs || {},
+  };
+
+  console.log(`Starting Ringg call to ${phone} with agent ${process.env.RINGG_AGENT_ID}`);
+
+  const resp = await fetch("https://prod-api.ringg.ai/ca/api/v0/calling/outbound/individual", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": process.env.RINGG_API_KEY,
+    },
+    body: JSON.stringify(callPayload),
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    console.error(`Ringg API error for ${phone}: ${resp.status} ${txt}`);
+    throw new Error(`Ringg start call failed: ${resp.status} ${txt}`);
+  }
+
+  const result = await resp.json();
+  const callId = result?.data?.["Unique Call ID"] || "";
+  console.log(`Ringg call started: call_id=${callId}`);
+  return { call_id: callId, raw: result };
+}
+
+async function findLeadByRinggCallId(callId) {
   const { data, error } = await supabase
     .from("leads")
     .select("*")
-    .eq("bland_call_id", callId)
+    .eq("ringg_call_id", callId)
     .single();
 
   if (error && error.code !== "PGRST116") {
-    console.error("findLeadByBlandCallId error:", error.message);
+    console.error("findLeadByRinggCallId error:", error.message);
   }
-
   return data || null;
 }
 
-// -------------------- Bland webhook schema (matches your payload) --------------------
-// Using .nullable().optional() to handle fields that can be null, undefined, or a value
-const BlandWebhookSchema = z.object({
-  call_id: z.string(),
-  c_id: z.string().nullable().optional(),
-  status: z.string().nullable().optional(),
-  completed: z.boolean().nullable().optional(),
-  answered_by: z.string().nullable().optional(),
-  call_length: z.number().nullable().optional(),
-  recording_url: z.string().nullable().optional(),
-  summary: z.string().nullable().optional(),
-  concatenated_transcript: z.string().nullable().optional(),
-  to: z.string().nullable().optional(),
-  phone_number: z.string().nullable().optional(),
-  metadata: z
-    .object({
-      lead_id: z.string().nullable().optional(),
-      property_id: z.string().nullable().optional(),
-      id: z.string().nullable().optional(), // Supabase UUID
+async function findLikelyActiveRinggLeadByPhone(phoneE164) {
+  if (!phoneE164) return null;
+
+  const { data, error } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("phone_e164", phoneE164)
+    .eq("call_provider", "ringg")
+    .order("last_call_at", { ascending: false })
+    .limit(3);
+
+  if (error) {
+    console.error("findLikelyActiveRinggLeadByPhone error:", error.message);
+    return null;
+  }
+
+  const leads = data || [];
+  if (leads.length === 0) return null;
+  const active = leads.find((l) => String(l.call_status || "").toLowerCase() === "calling");
+  return active || leads[0] || null;
+}
+
+function ringgTranscriptToText(transcriptArray) {
+  if (typeof transcriptArray === "string") return transcriptArray;
+  if (!Array.isArray(transcriptArray)) return "";
+  return transcriptArray
+    .map((turn) => {
+      if (turn.bot) return `bot: ${turn.bot}`;
+      if (turn.user) return `user: ${turn.user}`;
+      if (turn.agent) return `bot: ${turn.agent}`;
+      return "";
     })
-    .passthrough()
-    .nullable()
-    .optional(),
-}).passthrough();
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function upsertRinggCallTracking({
+  ringgCallId,
+  lead,
+  leadId,
+  propertyId,
+  phoneE164,
+  status,
+  outcome = null,
+  nextAction = null,
+  durationSec = null,
+  transcript = "",
+  recordingUrl = "",
+  outcomeSource = null,
+  payload,
+  isTerminal,
+}) {
+  const nowIso = new Date().toISOString();
+  const eventSnapshot = {
+    received_at: nowIso,
+    event_type: payload?.event_type || null,
+    call_id: ringgCallId,
+    status: payload?.status || status,
+    call_duration: payload?.call_duration ?? null,
+  };
+  const trimmedTranscript = typeof transcript === "string" ? transcript.slice(0, 50000) : "";
+
+  if (!ringgCallId) {
+    await supabase.from("calls").insert({
+      ringg_call_id: null,
+      lead_id: leadId || lead?.lead_id || null,
+      property_id: propertyId || lead?.property_id || null,
+      phone_e164: phoneE164 || lead?.phone_e164 || null,
+      call_provider: "ringg",
+      status,
+      outcome,
+      next_action: nextAction,
+      duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
+      transcript: trimmedTranscript,
+      recording_url: recordingUrl || null,
+      started_at: nowIso,
+      ended_at: isTerminal ? nowIso : null,
+      raw_webhook: { last_event: payload, ringg_events: [eventSnapshot], outcome_source: outcomeSource },
+    });
+    return;
+  }
+
+  const { data: existing, error: existingErr } = await supabase
+    .from("calls")
+    .select("raw_webhook, started_at, attempt, lead_id, property_id, phone_e164")
+    .eq("ringg_call_id", ringgCallId)
+    .maybeSingle();
+
+  if (existingErr) {
+    console.error("upsertRinggCallTracking read existing error:", existingErr.message);
+  }
+
+  const existingRaw = existing?.raw_webhook && typeof existing.raw_webhook === "object" ? existing.raw_webhook : {};
+  const existingEvents = Array.isArray(existingRaw.ringg_events) ? existingRaw.ringg_events : [];
+  const mergedEvents = [...existingEvents, eventSnapshot].slice(-50);
+
+  await supabase
+    .from("calls")
+    .upsert(
+      {
+        ringg_call_id: ringgCallId,
+        lead_id: leadId || existing?.lead_id || lead?.lead_id || null,
+        property_id: propertyId || existing?.property_id || lead?.property_id || null,
+        phone_e164: phoneE164 || existing?.phone_e164 || lead?.phone_e164 || null,
+        call_provider: "ringg",
+        status,
+        outcome,
+        next_action: nextAction,
+        attempt: existing?.attempt || null,
+        duration_sec: durationSec != null ? Math.round(Number(durationSec)) : null,
+        transcript: trimmedTranscript,
+        recording_url: recordingUrl || null,
+        started_at: existing?.started_at || nowIso,
+        ended_at: isTerminal ? nowIso : null,
+        raw_webhook: {
+          ...existingRaw,
+          last_event: payload,
+          ringg_events: mergedEvents,
+          outcome_source: outcomeSource ?? existingRaw.outcome_source ?? null,
+        },
+      },
+      { onConflict: "ringg_call_id" }
+    );
+}
 
 // -------------------- Bolna webhook schema --------------------
 // Use loose types for nested objects to avoid Zod v4 parse bugs when Bolna sends unexpected shapes
@@ -982,246 +1143,8 @@ function classifyOutcome({ answeredBy, summary, transcript, completed, callLengt
   return { outcome: "human_followup", next_action: "human_followup" };
 }
 
-// -------------------- Build prompt from sheet row --------------------
-function buildPromptFromRow(row) {
-  return `
-You are a professional real estate calling agent representing TrueValue Realtors, a trusted real estate advisory based in Gurugram. TrueValue’s mission is to be a partner in simplifying the process of finding, evaluating, and purchasing residential property.
-
-You are calling as a member of the TrueValue team.
-You speak confidently, professionally, and warmly.
-You do NOT sound like a bot or proxy.
-
---------------------------------
-YOUR ROLE IN THIS CALL
---------------------------------
-- Introduce the area and the project
-- Gauge interest and intent
-- Answer project- and area-related questions confidently
-- Qualify the lead for senior agent follow-up
-
-This is a lead-generation call, not a closing call.
-
---------------------------------
-YOU ARE NOT AUTHORIZED TO
---------------------------------
-- Negotiate pricing
-- Guarantee availability or possession
-- Make legal or possession claims
-- Provide details not supported by project facts or safe general real estate context
-- Share any personal or direct contact number
-- Discuss other projects besides Tulip Monsella
-
---------------------------------
-HOW TO SAY NUMBERS AND UNITS (VOICE — ALWAYS USE FULL WORDS)
---------------------------------
-When speaking out loud, never use abbreviations or acronyms. Say the full form so the listener hears clear, natural speech:
-- For decimal numbers, say the word "point" instead of a dot — e.g. "8 point 5 crores" not "8.5 crores". (A period/dot is read as end of sentence by the voice; "point" is correct for decimals.)
-- Say "rupees 8 point 5 crores" (or "8 point 5 crore rupees") — never "Rs 8.5 Cr", "₹8.5 Cr", or "RS 8.5 CR".
-- Say "square feet" or "square foot" — never "sq ft", "sqft", or "SQFT".
-- Say "lakh" and "crore" in full (e.g. "one lakh square feet", "8 point 5 crores").
-- Same for any other units: say the full word (e.g. "kilometres", "acres"), not abbreviations.
-
---------------------------------
-CRITICAL BEHAVIOR RULES
---------------------------------
-- Speak naturally, concise, confident, and empathetic
-- Ask ONE question at a time
-- Pause and listen fully after each response
-- Never rush to end the call
-- Do NOT repeat apologies
-- Do NOT say “I can’t help” without offering a constructive next step
-
-**Other Projects**
-- If asked about other projects (not Tulip Monsella), say: "I'm currently handling Tulip Monsella. For other projects, our senior agent can assist you."
-
-**Call Length Control**
-- Answer in 2-3 sentences per turn. The lead may ask several questions about Tulip Monsella — that is normal. Keep answering; do NOT wrap up or redirect just because they asked multiple questions.
-- Only wrap up and hand to senior agent when: (a) the topic is clearly off-topic (not about Tulip Monsella or real estate), or (b) the call has been very long and repetitive with no progress. When wrapping up, say only: "I appreciate your time. Let me have our senior agent follow up with you." Do NOT say "get back to conversation flow" or similar.
-
-**Silence & Pause Handling**
-- If the lead pauses or takes time to respond, wait patiently.
-- If there is brief silence, say **“Take your time.”** once and wait.
-- Do NOT move to the next question without a response.
-
-**Never interrupt the lead**
-- Wait for the lead to finish their full sentence or thought before you respond. Do NOT start speaking as soon as they pause briefly — they may be thinking or taking a breath.
-- If you are not sure they are done, wait. It is better to have a short silence than to cut them off mid-sentence.
-- Never talk over the lead or jump in before they have clearly finished speaking.
-
-**Contact & Identity Handling**
-- If asked for your phone number or contact details:
-  - Do NOT invent or share any number.
-  - Respond that follow-ups happen via official TrueValue channels.
-  - Continue the conversation calmly; do NOT end the call.
-
-If the lead challenges a fact:
-1) Acknowledge calmly  
-2) Clarify or reframe using available knowledge  
-3) Provide general real estate context if appropriate  
-4) Escalate to senior agent follow-up only if needed  
-
---------------------------------
-DISINTEREST & ENDING (CRITICAL — DO NOT IGNORE)
---------------------------------
-- If the lead clearly says they are NOT interested, NOT looking, don't want to continue, don't want details, or asks to stop (in any language, e.g. "no", "not interested", "I'm not looking", "don't want", "stop", "nahi", "ਨਹੀਂ", etc.):
-  1) Say ONE short, polite closing line only. For example: "No problem. Thank you for your time. Goodbye." or "Understood. Thanks for your time. Goodbye."
-  2) Do NOT pitch again. Do NOT offer more details. Do NOT ask "Would you like to hear about...?" or "Would you like me to share...?" after they have said they're not interested.
-  3) Consider the conversation complete; do not try to re-engage or change their mind.
-- Never be pushy. One clear "not interested" or "not looking" means stop selling and end politely.
-- If they say they're busy, don't have time, or to call back later, accept it and close with a brief thank-you. Do not keep pitching.
-
---------------------------------
-LEAD CONTEXT
---------------------------------
-${row.lead_name ? `Lead Name: ${row.lead_name}` : 'Lead name not provided'}
-Phone Number: ${row.phone_e164}
-
-You are calling this person directly as part of a professional outreach by TrueValue Realtors.
-
---------------------------------
-PROJECT KNOWLEDGE — TULIP MONSELLA
---------------------------------
-Tulip Monsella is a premium luxury residential project located on Golf Course Road, Sector 53, Gurgaon. It is positioned for high-end end users and long-term investors seeking large, fully loaded homes in a prime central location.
-
-The project spans approximately 20 acres and offers a limited collection of 3, 4, and 5 BHK residences, designed with a focus on privacy, lifestyle, and construction quality.
-
-CONFIGURATION & POSITIONING
-- 3, 4, and 5 BHK residences
-- 3 BHK starts from approx. 2299 sq. ft.
-- Fully loaded apartments
-- Private lift lobbies per apartment
-- Smart home: VRV AC, home automation, video door phone
-- High-speed elevators
-
-LOCATION
-- Sector 53, Golf Course Road, Gurgaon
-- One of Gurgaon’s most premium residential corridors
-- Strong connectivity to business hubs, schools, and conveniences
-
-KEY AMENITIES (Highlights)
-CLUBHOUSE & SKY DECK:
-- 1 lakh sq. ft. clubhouse across two levels
-- Sky Clubhouse on 41st floor with observation deck and sky lounge
-- Fine-dining restaurant, restro bar, cigar lounge
-- Mini theatre, business center, salon & spa
-
-SPORTS & FITNESS:
-- 2.5-acre sports academy by international cricketer
-- Olympic-size rooftop swimming pool + kids' pool
-- Tennis, basketball, badminton, squash courts
-- Fully-equipped gym + outdoor gym on deck
-
-LIFESTYLE & WELLNESS:
-- Jacuzzi, sauna, steam rooms, yoga deck
-- Landscaped gardens, jogging/cycling tracks
-- Pet-friendly zones with dedicated pet garden
-
-SECURITY & CONVENIENCE:
-- 5-tier security system with CCTV
-- Zero vehicular movement on ground level
-- 100% power backup
-- Dedicated basement parking
-
-BUILDER — TULIP GROUP
-Well-regarded Gurgaon developer. Known for timely delivery, zero-debt model, and Mivan construction.
-
-PRICING (INDICATIVE)
-- Starts around ₹8.5 Cr* (inventory dependent)
-- All pricing, availability, and payment details must be confirmed by a senior agent.
-
-POSSESSION
-- Expected around 2028 (indicative, not guaranteed)
-
---------------------------------
-GENERAL REAL ESTATE GUIDANCE
---------------------------------
-If a question is outside the provided project facts:
-- Use safe, general real estate knowledge
-- Be informative, not speculative
-
-Example:
-“That detail isn’t specifically listed. In many luxury residential projects, certain services or features can vary. The senior agent can confirm the exact details for you.”
-
---------------------------------
-CONVERSATION FLOW (FOLLOW THIS ORDER)
---------------------------------
-
-Opening  
-“Hi, I’m calling from TrueValue Realtors. Is this a good time to talk?”
-
-If No →  
-“Understood. Thank you for your time.”
-
-Interest & Location Check  
-“Are you currently exploring properties around Golf Course Road or nearby sectors?”
-
-Project Introduction  
-“We’re reaching out because we’re handling a premium project on Golf Course Road called Tulip Monsella. It offers spacious luxury residences with a strong amenity setup. Does that align with what you’re looking for?”
-
-Qualification  
-“Just to understand better — are you looking as an end user or as an investor?”  
-“Are you actively looking to move ahead soon, or still exploring options?”  
-“Do you have a budget range in mind at this stage?”
-
-Q&A  
-Answer using project knowledge first.  
-Escalate only when confirmation is required.
-
-Soft Close  
-“Based on your interest, the senior agent can follow up to discuss details and coordinate a site visit if needed.”
-
-Ending  
-“Thank you for your time. I’ll ensure this is shared for follow-up.”
-`.trim();
-}
 
 
-
-// -------------------- Start Bland call --------------------
-async function startBlandCall({ phone, voiceId, task, webhook, metadata }) {
-  // Detect if it's an India number (+91)
-  const isIndiaNumber = phone.startsWith("+91");
-  const fromNumber = process.env.BLAND_FROM_NUMBER || "+14154492886";
-
-  const callConfig = {
-    phone_number: phone,
-    from_number: fromNumber,
-    voice: voiceId,
-    record: true,
-    wait_for_greeting: false,
-    answered_by_enabled: true,
-    noise_cancellation: true,
-    voicemail_action: "hangup",
-    interruption_threshold: 500,
-    block_interruptions: false,
-    language: isIndiaNumber ? "en-IN" : "en-US", // Use Indian English for India numbers
-    model: "base",
-    webhook,
-    metadata,
-    task,
-  };
-
-  console.log(`Starting Bland call to ${phone} (India: ${isIndiaNumber})`);
-
-  const resp = await fetch("https://api.bland.ai/v1/calls", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.BLAND_API_KEY}`,
-    },
-    body: JSON.stringify(callConfig),
-  });
-
-  if (!resp.ok) {
-    const txt = await resp.text();
-    console.error(`Bland API error for ${phone}: ${resp.status} ${txt}`);
-    throw new Error(`Bland start call failed: ${resp.status} ${txt}`);
-  }
-
-  const result = await resp.json();
-  console.log(`Bland call started: call_id=${result.call_id || result.id}`);
-  return result;
-}
 
 // -------------------- Start Bolna call (Hinglish) --------------------
 async function startBolnaCall({ phone, userData }) {
@@ -1366,12 +1289,12 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Serve index.html for root path
 app.get("/", (req, res) => {
-  res.sendFile("index.html", { root: "public" });
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
 // Main leads dashboard page
 app.get("/dashboard", (req, res) => {
-  res.sendFile("dashboard.html", { root: "public" });
+  res.sendFile(path.join(PUBLIC_DIR, "dashboard.html"));
 });
 
 // --- Auth routes (no auth required) ---
@@ -1558,18 +1481,21 @@ app.delete("/datasets/:id", async (req, res) => {
 
 /**
  * POST /trigger-call
- * Triggers a call for a specific lead.
- * Input: { "id": "uuid-here", "provider": "bland" | "bolna" }
- * provider defaults to "bland" (English). Use "bolna" for Hinglish calls.
+ * Triggers a call for a specific lead via Bolna or Ringg.
+ * Input: { "id": "uuid-here", "provider": "bolna" | "ringg" }
  */
 app.post("/trigger-call", async (req, res) => {
   try {
     console.log("trigger-call received body:", JSON.stringify(req.body));
-    const { id, provider = "bland" } = req.body;
+    const { id, provider = "bolna" } = req.body;
 
-    // Validate provider
-    if (!["bland", "bolna"].includes(provider)) {
-      return res.status(400).json({ ok: false, error: "Invalid provider. Must be 'bland' or 'bolna'" });
+    const VALID_PROVIDERS = ["bolna", "ringg"];
+    if (!VALID_PROVIDERS.includes(provider)) {
+      return res.status(400).json({ ok: false, error: `Invalid provider. Supported: ${VALID_PROVIDERS.join(", ")}` });
+    }
+
+    if (provider === "ringg" && !RINGG_ENABLED) {
+      return res.status(400).json({ ok: false, error: "Ringg provider not configured. Set RINGG_API_KEY, RINGG_AGENT_ID, RINGG_FROM_NUMBER_ID." });
     }
 
     if (!id) {
@@ -1613,37 +1539,51 @@ app.post("/trigger-call", async (req, res) => {
     const startedAt = new Date().toISOString();
 
     try {
+      const contextVars = {
+        lead_name: row.lead_name || "",
+        phone_e164: row.phone_e164,
+        property_name: row.property_name || "Tulip Monsella",
+        lead_id: row.lead_id || "",
+        property_id: row.property_id || "",
+        id: leadId,
+      };
+
       let callId = "";
-      let callResponse = null;
 
-      if (provider === "bolna") {
-        // -------------------- BOLNA (Hinglish) --------------------
-        // Bolna uses pre-configured agent with context variables
-        const userData = {
-          lead_name: row.lead_name || "",
+      if (provider === "ringg") {
+        const ringgResp = await startRinggCall({
+          phone: row.phone_e164,
+          name: row.lead_name || "Lead",
+          customArgs: contextVars,
+        });
+
+        callId = ringgResp.call_id;
+        console.log(`Ringg: saving call_id=${callId} to lead ${leadId}`);
+        await updateRow(leadId, { ringg_call_id: callId });
+
+        await supabase.from("calls").insert({
+          lead_id: row.lead_id || null,
+          property_id: row.property_id || null,
           phone_e164: row.phone_e164,
-          property_name: row.property_name || "Tulip Monsella",
-          lead_id: row.lead_id || "",
-          property_id: row.property_id || "",
-          id: leadId, // Supabase UUID for webhook lookup
-        };
-
+          ringg_call_id: callId || null,
+          call_provider: "ringg",
+          status: "calling",
+          outcome: null,
+          next_action: null,
+          attempt: attempts,
+          started_at: startedAt,
+          raw_webhook: { started_response: ringgResp.raw },
+        });
+      } else {
         const bolnaResp = await startBolnaCall({
           phone: row.phone_e164,
-          userData,
+          userData: contextVars,
         });
 
         callId = bolnaResp.execution_id || "";
-        callResponse = bolnaResp;
-
-        // Save bolna_execution_id to lead immediately so webhooks can find it
         console.log(`Bolna: saving execution_id=${callId} to lead ${leadId}`);
-        await updateRow(leadId, {
-          bolna_execution_id: callId,
-        });
-        console.log(`Bolna: saved execution_id to lead ${leadId}`);
+        await updateRow(leadId, { bolna_execution_id: callId });
 
-        // Save to calls table for history
         await supabase.from("calls").insert({
           lead_id: row.lead_id || null,
           property_id: row.property_id || null,
@@ -1656,48 +1596,6 @@ app.post("/trigger-call", async (req, res) => {
           attempt: attempts,
           started_at: startedAt,
           raw_webhook: { started_response: bolnaResp },
-        });
-
-      } else {
-        // -------------------- BLAND (English - default) --------------------
-        const task = buildPromptFromRow(row);
-
-        // Metadata includes id for webhook -> update correct lead
-        const metadata = {
-          lead_id: row.lead_id || "",
-          property_id: row.property_id || "",
-          id: leadId, // Supabase UUID
-        };
-
-        const blandResp = await startBlandCall({
-          phone: row.phone_e164,
-          voiceId: row.voice_id || DEFAULT_VOICE_ID,
-          task,
-          webhook: PUBLIC_WEBHOOK_URL,
-          metadata,
-        });
-
-        callId = blandResp.call_id || blandResp.id || "";
-        callResponse = blandResp;
-
-        // Save bland_call_id to lead
-        await updateRow(leadId, {
-          bland_call_id: callId,
-        });
-
-        // Save to calls table for history
-        await supabase.from("calls").insert({
-          lead_id: row.lead_id || null,
-          property_id: row.property_id || null,
-          phone_e164: row.phone_e164,
-          bland_call_id: callId || null,
-          call_provider: "bland",
-          status: "calling",
-          outcome: null,
-          next_action: null,
-          attempt: attempts,
-          started_at: startedAt,
-          raw_webhook: { started_response: blandResp },
         });
       }
 
@@ -2083,6 +1981,50 @@ app.delete("/delete-row", async (req, res) => {
 });
 
 /**
+ * PUT /update-rows-bulk
+ * Updates multiple leads in the database.
+ * Input: { "ids": ["uuid-1", "uuid-2", ...], "data": { "call_status": "queued", ... } }
+ */
+app.put("/update-rows-bulk", async (req, res) => {
+  try {
+    const { ids, data } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ ok: false, error: "Invalid ids. Must be a non-empty array" });
+    }
+
+    if (!data || typeof data !== "object") {
+      return res.status(400).json({ ok: false, error: "Invalid data. Expected { data: { ... } }" });
+    }
+
+    // Only allow updating call_status for bulk operations (safety)
+    const allowedFields = ["call_status"];
+    const safeData = {};
+    for (const key of allowedFields) {
+      if (data[key] !== undefined) {
+        safeData[key] = data[key];
+      }
+    }
+    if (Object.keys(safeData).length === 0) {
+      return res.status(400).json({ ok: false, error: "No allowed fields to update. Use data: { call_status: 'queued' | 'calling' | 'completed' | 'failed' }" });
+    }
+
+    await updateRowsBulk(ids, safeData);
+
+    console.log(`PUT /update-rows-bulk - updated ${ids.length} leads`);
+
+    return res.json({
+      ok: true,
+      message: `${ids.length} lead(s) updated successfully`,
+      updated_count: ids.length,
+    });
+  } catch (err) {
+    console.error("update-rows-bulk failed:", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/**
  * DELETE /delete-rows-bulk
  * Deletes multiple leads from the database.
  * Input: { "ids": ["uuid-1", "uuid-2", ...] }
@@ -2112,17 +2054,14 @@ app.delete("/delete-rows-bulk", async (req, res) => {
 
 /**
  * POST /run-dialer
- * Bulk Dialing with A/B testing support for Bland (English) and Bolna (Hinglish).
- * Reads queued rows and starts calls based on bolna_ratio.
- * Input: { "limit": 25, "bolna_ratio": 50 }
+ * Bulk Dialing with Bolna (Hinglish) only.
+ * Input: { "limit": 25, "dataset_id": "optional uuid" }
  *   - limit: max leads to call (default 5, max 50)
- *   - bolna_ratio: percentage of leads to call via Bolna/Hinglish (0-100, default 0)
  */
 app.post("/run-dialer", async (req, res) => {
   try {
-    const { limit = 5, bolna_ratio = 0, dataset_id = null } = req.body;
+    const { limit = 5, dataset_id = null } = req.body;
     const maxRows = Math.min(Math.max(Number(limit), 1), 50);
-    const bolnaPercent = Math.min(Math.max(Number(bolna_ratio), 0), 100);
 
     const { rows } = await readAllRows(dataset_id || null);
 
@@ -2137,144 +2076,63 @@ app.post("/run-dialer", async (req, res) => {
       return res.json({ ok: true, processed: 0, message: "No queued leads found" });
     }
 
-    // Split leads based on bolna_ratio
-    const bolnaCount = Math.round(queued.length * (bolnaPercent / 100));
-    const bolnaLeads = queued.slice(0, bolnaCount);
-    const blandLeads = queued.slice(bolnaCount);
-
-    console.log(`Bulk dialing: ${queued.length} total, ${bolnaLeads.length} via Bolna, ${blandLeads.length} via Bland`);
+    console.log(`Bulk dialing: ${queued.length} leads via Bolna`);
 
     const startedAt = new Date().toISOString();
     let bolnaSuccessCount = 0;
     let bolnaBatchId = null;
-    let blandBatchId = null;
 
-    // -------------------- BOLNA CALLS (Hinglish) --------------------
     // Use Bolna Batch API for bulk outbound calls.
-    if (bolnaLeads.length > 0) {
-      console.log(`Starting Bolna batch for ${bolnaLeads.length} leads...`);
+    console.log(`Starting Bolna batch for ${queued.length} leads...`);
 
-      // Optimistically mark all selected Bolna leads as calling.
-      for (const row of bolnaLeads) {
-        const attempts = Number(row.call_attempts || 0) + 1;
-        await updateRow(row.id, {
-          call_status: "calling",
-          call_attempts: attempts,
-          last_call_at: startedAt,
-          call_provider: "bolna",
-        });
-      }
-
-      try {
-        const created = await createBolnaBatch({ leads: bolnaLeads });
-        bolnaBatchId = created.batchId;
-        const bolnaScheduledAt = getBolnaBatchScheduledAt();
-        const scheduleResult = await scheduleBolnaBatch({ batchId: bolnaBatchId, scheduledAt: bolnaScheduledAt });
-
-        // Track call attempts in history table. execution_id is unknown until webhooks arrive.
-        for (const row of bolnaLeads) {
-          const attempts = Number(row.call_attempts || 0) + 1;
-          await supabase.from("calls").insert({
-            lead_id: row.lead_id || null,
-            property_id: row.property_id || null,
-            phone_e164: row.phone_e164,
-            bolna_execution_id: null,
-            call_provider: "bolna",
-            status: "calling",
-            outcome: null,
-            next_action: null,
-            attempt: attempts,
-            started_at: startedAt,
-            raw_webhook: {
-              bolna_batch_id: bolnaBatchId,
-              bolna_scheduled_at: scheduleResult.scheduledAt,
-              batch_create_response: created.raw,
-              batch_schedule_response: scheduleResult.raw,
-            },
-          });
-        }
-
-        bolnaSuccessCount = bolnaLeads.length;
-      } catch (bolnaBatchErr) {
-        console.error("Bolna batch failed:", bolnaBatchErr);
-
-        // Roll selected Bolna leads back to failed if batch creation/scheduling fails.
-        for (const row of bolnaLeads) {
-          await updateRow(row.id, {
-            call_status: "failed",
-            notes: `Bolna batch failed: ${String(bolnaBatchErr.message || bolnaBatchErr)}`,
-          });
-        }
-      }
+    for (const row of queued) {
+      const attempts = Number(row.call_attempts || 0) + 1;
+      await updateRow(row.id, {
+        call_status: "calling",
+        call_attempts: attempts,
+        last_call_at: startedAt,
+        call_provider: "bolna",
+      });
     }
 
-    // -------------------- BLAND CALLS (English) --------------------
-    if (blandLeads.length > 0) {
-      // Prepare Call Objects for Bland Batch
-      const callObjects = blandLeads.map(row => {
-        const task = buildPromptFromRow(row);
-        const isIndiaNumber = row.phone_e164.startsWith("+91");
+    try {
+      const created = await createBolnaBatch({ leads: queued });
+      bolnaBatchId = created.batchId;
+      const bolnaScheduledAt = getBolnaBatchScheduledAt();
+      const scheduleResult = await scheduleBolnaBatch({ batchId: bolnaBatchId, scheduledAt: bolnaScheduledAt });
 
-        return {
-          phone_number: row.phone_e164,
-          task: task,
-          language: isIndiaNumber ? "en-IN" : "en-US",
-          metadata: {
-            lead_id: row.lead_id,
-            property_id: row.property_id,
-            id: row.id, // Supabase UUID
-          }
-        };
-      });
-
-      // Update leads to mark as calling
-      for (const row of blandLeads) {
+      for (const row of queued) {
         const attempts = Number(row.call_attempts || 0) + 1;
-        await updateRow(row.id, {
-          call_status: "calling",
-          call_attempts: attempts,
-          last_call_at: startedAt,
-          call_provider: "bland",
+        await supabase.from("calls").insert({
+          lead_id: row.lead_id || null,
+          property_id: row.property_id || null,
+          phone_e164: row.phone_e164,
+          bolna_execution_id: null,
+          call_provider: "bolna",
+          status: "calling",
+          outcome: null,
+          next_action: null,
+          attempt: attempts,
+          started_at: startedAt,
+          raw_webhook: {
+            bolna_batch_id: bolnaBatchId,
+            bolna_scheduled_at: scheduleResult.scheduledAt,
+            batch_create_response: created.raw,
+            batch_schedule_response: scheduleResult.raw,
+          },
         });
       }
 
-      // Send Batch to Bland
-      console.log(`Triggering Bland Batch for ${blandLeads.length} numbers`);
+      bolnaSuccessCount = queued.length;
+    } catch (bolnaBatchErr) {
+      console.error("Bolna batch failed:", bolnaBatchErr);
 
-      const globalTask = callObjects.length > 0 ? callObjects[0].task : buildPromptFromRow(blandLeads[0]);
-
-      const batchPayload = {
-        call_objects: callObjects,
-        global: {
-          task: globalTask,
-          voice: DEFAULT_VOICE_ID,
-          webhook: PUBLIC_WEBHOOK_URL,
-          record: true,
-          wait_for_greeting: false,
-          answered_by_enabled: true,
-          voicemail_action: "hangup",
-          interruption_threshold: 500,
-          model: "base"
-        }
-      };
-
-      const blandResp = await fetch("https://api.bland.ai/v2/batches/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `${process.env.BLAND_API_KEY}`,
-        },
-        body: JSON.stringify(batchPayload),
-      });
-
-      if (!blandResp.ok) {
-        const txt = await blandResp.text();
-        throw new Error(`Bland Batch API failed: ${blandResp.status} ${txt}`);
+      for (const row of queued) {
+        await updateRow(row.id, {
+          call_status: "failed",
+          notes: `Bolna batch failed: ${String(bolnaBatchErr.message || bolnaBatchErr)}`,
+        });
       }
-
-      const blandResult = await blandResp.json();
-      console.log("Bland Batch created:", blandResult);
-      blandBatchId = blandResult.data?.batch_id;
     }
 
     return res.json({
@@ -2282,131 +2140,12 @@ app.post("/run-dialer", async (req, res) => {
       processed: queued.length,
       bolna_calls: bolnaSuccessCount,
       bolna_batch_id: bolnaBatchId,
-      bland_calls: blandLeads.length,
-      bland_batch_id: blandBatchId,
-      message: `Started ${bolnaSuccessCount} Bolna (Hinglish) + ${blandLeads.length} Bland (English) calls`
+      message: `Started ${bolnaSuccessCount} Bolna (Hinglish) calls`
     });
 
   } catch (err) {
     console.error("run-dialer failed:", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-/**
- * POST /webhooks/bland
- * Bland sends call results here after completion.
- */
-app.post("/webhooks/bland", async (req, res) => {
-  try {
-    const payload = BlandWebhookSchema.parse(req.body);
-
-    // Extract fields
-    const callId = payload.call_id;
-    const status = payload.status || "unknown";
-    const answeredBy = payload.answered_by || "unknown";
-    const durationSec = payload.call_length ? Math.round(payload.call_length) : null;
-    const recordingUrl = payload.recording_url || "";
-    const transcript = payload.concatenated_transcript || "";
-    const summary = payload.summary || "";
-
-    const meta = payload.metadata || {};
-    const leadId = meta.lead_id || "";
-    const propertyId = meta.property_id || "";
-    const supabaseId = meta.id || null; // Supabase UUID
-
-    // Extract Bland's disposition_tag if available (Bland's own classification)
-    const dispositionTag = payload.disposition_tag || null;
-
-    const { outcome, next_action } = classifyOutcome({
-      answeredBy,
-      summary,
-      transcript,
-      completed: payload.completed || false,
-      callLength: payload.call_length || null,
-      dispositionTag,
-    });
-
-    // Determine call_status based on outcome
-    const callStatusMap = {
-      "opt_out": "opt_out",
-      "not_interested": "completed",
-      "no_answer": "no_answer",
-      "voicemail": "voicemail",
-      "interested": "completed",
-      "human_followup": "completed",
-    };
-    const callStatus = callStatusMap[outcome] || "completed";
-
-    console.log(`Bland webhook: call_id=${callId}, answered_by=${answeredBy}, outcome=${outcome}, call_status=${callStatus}`);
-
-    // Find lead by id from metadata, or by bland_call_id
-    let lead = null;
-    if (supabaseId) {
-      lead = await readRow(supabaseId).catch(() => null);
-    }
-    if (!lead) {
-      lead = await findLeadByBlandCallId(callId);
-    }
-
-    // Update lead if found. Do not overwrite a completed lead with a late no_answer from Bland
-    // (e.g. user triggered Bland then Bolna; Bolna completed first, Bland webhook arrives later).
-    const leadAlreadyCompleted = lead && String(lead.call_status || "").toLowerCase() === "completed";
-    const blandSaysNoAnswer = callStatus === "no_answer";
-    const skipLeadUpdate = leadAlreadyCompleted && blandSaysNoAnswer;
-
-    if (lead && !skipLeadUpdate) {
-      await updateRow(lead.id, {
-        call_status: callStatus,
-        outcome,
-        next_action,
-        bland_call_id: callId,
-        last_call_at: new Date().toISOString(),
-        recording_url: recordingUrl,
-        transcript: transcript,
-        summary: summary,
-      });
-    } else if (skipLeadUpdate) {
-      console.log(`Bland webhook: skipping lead update (lead already completed, Bland late no_answer for call_id=${callId})`);
-    } else if (!lead) {
-      console.log(`Bland webhook: Could not find lead for call_id=${callId}`);
-    }
-
-    // Upsert calls table for history
-    await supabase
-      .from("calls")
-      .upsert(
-        {
-          bland_call_id: callId,
-          lead_id: leadId,
-          property_id: propertyId,
-          phone_e164: payload.to || payload.phone_number || null,
-          status,
-          outcome,
-          next_action,
-          duration_sec: durationSec,
-          transcript,
-          recording_url: recordingUrl,
-          raw_webhook: req.body,
-          ended_at: new Date().toISOString(),
-        },
-        { onConflict: "bland_call_id" }
-      );
-
-    // WhatsApp Hot Lead Alert: fire only when outcome is "interested"
-    if (outcome === "interested" && lead) {
-      sendWhatsAppHotLeadAlert({
-        leadName: lead.lead_name || "",
-        phoneE164: payload.to || payload.phone_number || "",
-        propertyName: lead.property_name || lead.property_address || "Tulip Monsella",
-        callSummary: summary,
-      });
-    }
-
-    return res.status(200).send("ok");
-  } catch (err) {
-    console.error("Bland webhook error:", err);
-    return res.status(400).json({ ok: false, error: String(err.message || err) });
   }
 });
 
@@ -2606,8 +2345,212 @@ app.post("/webhooks/bolna", async (req, res) => {
   }
 });
 
+// -------------------- Ringg AI Webhook --------------------
+// Ringg sends separate event types: call_started, call_completed, recording_completed,
+// platform_analysis_completed, client_analysis_completed.
+// We treat call_completed as terminal and use platform/client analysis to enrich.
+const RINGG_TERMINAL_EVENT_TYPES = ["call_completed"];
+
+app.post("/webhooks/ringg", async (req, res) => {
+  try {
+    const payload = req.body || {};
+    console.log("Ringg webhook received:", JSON.stringify(payload).slice(0, 500));
+
+    const eventType = payload.event_type || "";
+    const ringgCallId = payload.call_id || "";
+    const status = payload.status || eventType;
+    const customArgs = payload.custom_args_values || {};
+    const supabaseId = customArgs.id || null;
+    const leadId = customArgs.lead_id || "";
+    const propertyId = customArgs.property_id || "";
+    const phoneE164 = payload.to_number || customArgs.phone_e164 || "";
+    const durationSec = payload.call_duration ?? null;
+    const recordingUrl = payload.recording_url || "";
+    const rawTranscript = payload.transcript;
+    const transcript = ringgTranscriptToText(rawTranscript);
+
+    const isTerminal = RINGG_TERMINAL_EVENT_TYPES.includes(eventType);
+    const isAnalysis = eventType === "platform_analysis_completed" || eventType === "client_analysis_completed";
+
+    // --- Find lead ---
+    let lead = null;
+    if (supabaseId) lead = await readRow(supabaseId).catch(() => null);
+    if (!lead && ringgCallId) lead = await findLeadByRinggCallId(ringgCallId);
+    if (!lead && leadId) lead = await readRow(leadId).catch(() => null);
+    if (!lead && phoneE164) lead = await findLikelyActiveRinggLeadByPhone(phoneE164);
+
+    if (!lead) {
+      console.warn(`Ringg webhook: no lead found (call_id=${ringgCallId}, phone=${phoneE164})`);
+    } else if (ringgCallId && !lead.ringg_call_id) {
+      await updateRow(lead.id, { ringg_call_id: ringgCallId });
+    }
+
+    // --- Non-terminal: just track and ack ---
+    if (!isTerminal && !isAnalysis) {
+      if (lead) {
+        await updateRow(lead.id, {
+          ringg_call_id: ringgCallId || lead.ringg_call_id || null,
+          call_provider: "ringg",
+          call_status: "calling",
+          last_call_at: new Date().toISOString(),
+          notes: `Ringg in-progress - ${eventType}`,
+        });
+      }
+      return res.status(200).json({ received: true });
+    }
+
+    // --- Analysis events: enrich existing call data ---
+    if (isAnalysis) {
+      const analysisData = payload.analysis_data || {};
+      const classification = analysisData.classification || "";
+      const summary = analysisData.summary || "";
+      const disconnectReason = analysisData.call_disconnect_reason || "";
+
+      if (lead) {
+        const enrichUpdate = {};
+
+        if (eventType === "platform_analysis_completed") {
+          enrichUpdate.summary = summary;
+          enrichUpdate.notes = `Ringg analysis: ${classification || "analyzed"}. ${disconnectReason ? `Disconnect: ${disconnectReason}` : ""}`.trim();
+
+          const normalizedClassification = normalizeOutcomeLabel(classification);
+          if (normalizedClassification && normalizedClassification !== lead.outcome) {
+            const transcriptText = (lead.transcript || "").toLowerCase();
+            if (hasDisinterestSignal(transcriptText)) {
+              enrichUpdate.outcome = "not_interested";
+              enrichUpdate.next_action = "none";
+            } else {
+              enrichUpdate.outcome = normalizedClassification;
+              enrichUpdate.next_action = defaultNextActionForOutcome(normalizedClassification);
+            }
+          }
+        }
+
+        if (eventType === "client_analysis_completed" && Object.keys(analysisData).length > 0) {
+          enrichUpdate.notes = `Ringg client analysis: ${JSON.stringify(analysisData).slice(0, 500)}`;
+        }
+
+        if (Object.keys(enrichUpdate).length > 0) {
+          await updateRow(lead.id, enrichUpdate);
+        }
+      }
+
+      // Also update calls table with analysis
+      if (ringgCallId) {
+        const { data: existingCall } = await supabase
+          .from("calls")
+          .select("raw_webhook")
+          .eq("ringg_call_id", ringgCallId)
+          .maybeSingle();
+
+        if (existingCall) {
+          const existingRaw = existingCall.raw_webhook || {};
+          await supabase
+            .from("calls")
+            .update({
+              raw_webhook: { ...existingRaw, [eventType]: payload },
+            })
+            .eq("ringg_call_id", ringgCallId);
+        }
+      }
+
+      return res.status(200).json({ received: true });
+    }
+
+    // --- Terminal (call_completed): classify outcome ---
+    let answeredBy = "unknown";
+    if (status === "completed") answeredBy = "human";
+    else if (status === "failed") answeredBy = "no_answer";
+
+    const { outcome, next_action } = classifyOutcome({
+      answeredBy,
+      summary: "",
+      transcript,
+      completed: status === "completed",
+      callLength: durationSec,
+      dispositionTag: null,
+    });
+
+    let finalOutcome = outcome;
+    let finalNextAction = next_action;
+    let outcomeSource = "local_classifier";
+    const lowerTranscript = transcript.toLowerCase();
+
+    if (status === "failed" || status === "retry") {
+      finalOutcome = "no_answer";
+      finalNextAction = "call_back_later";
+      outcomeSource = "status_mapping";
+    } else if (status === "completed" && hasDisinterestSignal(lowerTranscript)) {
+      finalOutcome = "not_interested";
+      finalNextAction = "none";
+      outcomeSource = "disinterest_signal";
+    } else if (status === "completed" && hasStrongInterestSignal(lowerTranscript)) {
+      finalOutcome = "interested";
+      finalNextAction = "human_followup";
+      outcomeSource = "interest_signal";
+    }
+
+    const callStatusMap = {
+      "opt_out": "opt_out",
+      "not_interested": "completed",
+      "no_answer": "no_answer",
+      "voicemail": "voicemail",
+      "interested": "completed",
+      "human_followup": "completed",
+    };
+    const callStatus = callStatusMap[finalOutcome] || "completed";
+
+    console.log(`Ringg webhook: call_id=${ringgCallId}, event=${eventType}, status=${status}, final_outcome=${finalOutcome}, source=${outcomeSource}`);
+
+    await upsertRinggCallTracking({
+      ringgCallId,
+      lead,
+      leadId,
+      propertyId,
+      phoneE164,
+      status,
+      outcome: finalOutcome,
+      nextAction: finalNextAction,
+      durationSec,
+      transcript,
+      recordingUrl,
+      outcomeSource,
+      payload,
+      isTerminal: true,
+    });
+
+    if (lead) {
+      await updateRow(lead.id, {
+        ringg_call_id: ringgCallId || lead.ringg_call_id || null,
+        call_provider: "ringg",
+        call_status: callStatus,
+        outcome: finalOutcome,
+        next_action: finalNextAction,
+        recording_url: recordingUrl,
+        transcript,
+        notes: `Ringg call - ${status}`,
+        last_call_at: new Date().toISOString(),
+      });
+    }
+
+    if (finalOutcome === "interested" && lead) {
+      sendWhatsAppHotLeadAlert({
+        leadName: lead.lead_name || customArgs.lead_name || "",
+        phoneE164: payload.to_number || lead.phone_e164 || "",
+        propertyName: lead.property_name || customArgs.property_name || "Tulip Monsella",
+        callSummary: `Ringg AI call - Lead showed interest. Duration: ${durationSec ?? 0}s`,
+      });
+    }
+
+    return res.status(200).json({ received: true });
+  } catch (err) {
+    console.error("Ringg webhook error:", err);
+    return res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
 // Serve static files AFTER all API routes
-app.use(express.static("public"));
+app.use(express.static(PUBLIC_DIR));
 
 // -------------------- Error Handling Middleware --------------------
 // Handle multer and other errors - must be after all routes
