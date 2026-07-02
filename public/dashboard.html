@@ -542,7 +542,6 @@
     <!-- Navbar -->
     <nav class="navbar">
       <div class="navbar-left">
-        <img src="Homeseek logo.jpg" alt="Homeseek" class="navbar-logo">
         <span class="navbar-title">Command Center</span>
       </div>
       <div class="navbar-actions">
@@ -551,21 +550,6 @@
         <div style="position:relative; display:inline-block;">
           <button class="btn btn-secondary btn-sm" onclick="toggleBulkMenu()">⚡ Bulk Actions</button>
           <div id="bulkMenu" style="display:none; position:absolute; right:0; top:100%; background:white; border:1px solid var(--separator); border-radius:8px; box-shadow:var(--shadow-md); padding:8px; min-width:220px; z-index:100; margin-top:4px;">
-            <div style="padding:4px 8px 12px; border-bottom:1px solid var(--separator); margin-bottom:4px;">
-              <label style="font-size:12px; color:var(--text-secondary); display:block; margin-bottom:4px;">
-                Hinglish Ratio: <span id="bolnaRatioLabel">0</span>%
-              </label>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:11px; color:var(--text-tertiary);">EN</span>
-                <input type="range" id="bolnaRatioSlider" min="0" max="100" value="0" step="10" 
-                  style="flex:1; cursor:pointer;" 
-                  oninput="document.getElementById('bolnaRatioLabel').textContent = this.value">
-                <span style="font-size:11px; color:var(--text-tertiary);">HI</span>
-              </div>
-              <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px;">
-                0% = All English (Bland) | 100% = All Hinglish (Bolna)
-              </div>
-            </div>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(5)">Call 5 Leads</button>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(25)">Call 25 Leads</button>
             <button class="btn btn-tertiary btn-sm" style="width:100%; justify-content:flex-start;" onclick="triggerBulkCall(50)">Call 50 Leads</button>
@@ -619,6 +603,17 @@
         <option value="opt_out">Opt Out</option>
       </select>
 
+      <div id="bulkStatusWrap" style="display:none; position:relative;">
+        <button id="bulkStatusBtn" class="btn btn-secondary btn-sm" onclick="toggleBulkStatusMenu(event)" aria-haspopup="true">
+          Set Status ▾ (<span id="selectedCountStatus">0</span>)
+        </button>
+        <div id="bulkStatusDropdown" class="export-dropdown" role="menu" aria-hidden="true" style="min-width:160px;">
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="handleBulkStatus('queued')">→ Queued</button>
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="handleBulkStatus('calling')">→ Calling</button>
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="handleBulkStatus('completed')">→ Completed</button>
+          <button type="button" class="export-dropdown-item" role="menuitem" onclick="handleBulkStatus('failed')">→ Failed</button>
+        </div>
+      </div>
       <button id="bulkDeleteBtn" class="btn btn-destructive btn-sm" onclick="handleBulkDelete()" style="display:none;">
         Delete Selected (<span id="selectedCount">0</span>)
       </button>
@@ -1047,11 +1042,11 @@
           ${!editing && !adding ? `
             <div style="padding: 20px 24px 0; display:flex; flex-direction:column; gap:10px;">
               <div style="display:flex; gap:8px;">
-                <button type="button" class="btn btn-call" style="flex:1" ${!canCall ? 'disabled' : ''} onclick="triggerCall('${record.id}', 'bland')">
-                  ${record.call_status === 'calling' ? 'Calling...' : '🇺🇸 Call (English)'}
-                </button>
                 <button type="button" class="btn btn-call" style="flex:1; background: linear-gradient(135deg, #ff9500 0%, #ff6b00 100%);" ${!canCall ? 'disabled' : ''} onclick="triggerCall('${record.id}', 'bolna')">
-                  ${record.call_status === 'calling' ? 'Calling...' : '🇮🇳 Call (Hinglish)'}
+                  ${record.call_status === 'calling' && record.call_provider === 'bolna' ? 'Calling...' : '🇮🇳 Bolna'}
+                </button>
+                <button type="button" class="btn btn-call" style="flex:1; background: linear-gradient(135deg, #007aff 0%, #5856d6 100%);" ${!canCall ? 'disabled' : ''} onclick="triggerCall('${record.id}', 'ringg')">
+                  ${record.call_status === 'calling' && record.call_provider === 'ringg' ? 'Calling...' : '📞 Ringg'}
                 </button>
               </div>
               <button type="button" class="btn btn-secondary" onclick="openDrawer('${record.id}', true)">Edit</button>
@@ -1173,9 +1168,9 @@
       }
     }
 
-    async function triggerCall(id, provider = 'bland') {
+    async function triggerCall(id, provider = 'bolna') {
       try {
-        const providerLabel = provider === 'bolna' ? 'Hinglish' : 'English';
+        const providerLabel = provider === 'ringg' ? 'Ringg AI' : 'Bolna (Hinglish)';
 
         const res = await fetch(`${API_BASE_URL}/trigger-call`, fetchOpts({
           method: 'POST',
@@ -1253,19 +1248,14 @@
     });
 
     async function triggerBulkCall(limit) {
-      const bolnaRatio = parseInt(document.getElementById('bolnaRatioSlider')?.value || '0', 10);
       toggleBulkMenu();
       
-      const ratioText = bolnaRatio === 0 ? 'all English (Bland)' : 
-                        bolnaRatio === 100 ? 'all Hinglish (Bolna)' : 
-                        `${100 - bolnaRatio}% English + ${bolnaRatio}% Hinglish`;
-      
-      if (!confirm(`Start ${limit} calls with ${ratioText}?\n\nThis will trigger calls immediately.`)) return;
+      if (!confirm(`Start ${limit} calls (Hinglish/Bolna)?\n\nThis will trigger calls immediately.`)) return;
 
       try {
-        showToast(`Starting batch of ${limit} calls (${ratioText})...`);
+        showToast(`Starting batch of ${limit} calls...`);
 
-        const payload = { limit, bolna_ratio: bolnaRatio };
+        const payload = { limit };
         if (activeDatasetId) payload.dataset_id = activeDatasetId;
         
         const res = await fetch(`${API_BASE_URL}/run-dialer`, fetchOpts({
@@ -1338,12 +1328,78 @@
     function updateBulkDeleteButton() {
       const btn = document.getElementById('bulkDeleteBtn');
       const countSpan = document.getElementById('selectedCount');
+      const bulkStatusWrap = document.getElementById('bulkStatusWrap');
+      const selectedCountStatus = document.getElementById('selectedCountStatus');
 
       if (selectedRows.size > 0) {
         btn.style.display = 'inline-flex';
         countSpan.textContent = selectedRows.size;
+        if (bulkStatusWrap) bulkStatusWrap.style.display = 'inline-flex';
+        if (selectedCountStatus) selectedCountStatus.textContent = selectedRows.size;
       } else {
         btn.style.display = 'none';
+        if (bulkStatusWrap) bulkStatusWrap.style.display = 'none';
+        closeBulkStatusMenu();
+      }
+    }
+
+    function toggleBulkStatusMenu(event) {
+      event.stopPropagation();
+      const menu = document.getElementById('bulkStatusDropdown');
+      const btn = document.getElementById('bulkStatusBtn');
+      const isOpen = menu.classList.toggle('open');
+      btn.setAttribute('aria-expanded', isOpen);
+      menu.setAttribute('aria-hidden', !isOpen);
+      if (isOpen) {
+        document.addEventListener('click', closeBulkStatusMenuOnce);
+      } else {
+        document.removeEventListener('click', closeBulkStatusMenuOnce);
+      }
+    }
+
+    function closeBulkStatusMenu() {
+      const menu = document.getElementById('bulkStatusDropdown');
+      const btn = document.getElementById('bulkStatusBtn');
+      if (menu) menu.classList.remove('open');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      const m = document.getElementById('bulkStatusDropdown');
+      if (m) m.setAttribute('aria-hidden', 'true');
+      document.removeEventListener('click', closeBulkStatusMenuOnce);
+    }
+
+    function closeBulkStatusMenuOnce() {
+      closeBulkStatusMenu();
+      document.removeEventListener('click', closeBulkStatusMenuOnce);
+    }
+
+    async function handleBulkStatus(newStatus) {
+      const count = selectedRows.size;
+      if (count === 0) return;
+
+      closeBulkStatusMenu();
+
+      try {
+        const ids = Array.from(selectedRows);
+        showToast(`Updating ${count} lead(s) to ${newStatus}...`);
+
+        const res = await fetch(`${API_BASE_URL}/update-rows-bulk`, fetchOpts({
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids, data: { call_status: newStatus } })
+        }));
+
+        const data = await res.json();
+
+        if (!data.ok) throw new Error(data.error);
+
+        showToast(`${count} lead(s) set to ${newStatus}`);
+        selectedRows.clear();
+        updateBulkDeleteButton();
+        updateSelectAllCheckbox();
+        await loadData();
+      } catch (e) {
+        showToast(e.message || 'Bulk status update failed', true);
+        console.error(e);
       }
     }
 

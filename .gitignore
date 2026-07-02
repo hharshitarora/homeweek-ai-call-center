@@ -35,3 +35,20 @@ dist/
 build/
 *.tsbuildinfo
 
+
+# Credentials & keys (never commit)
+inspiring-modem-*.json
+*service-account*.json
+
+# Lead data & client-specific assets (kept local only)
+*.csv
+bolna-agent-prompt*.txt
+public/Homeseek*
+
+# Local notes & tooling artifacts
+PROUD_AGENT_SESSION.md
+Logs/
+_ul
+.claude/settings.local.json
+supabase/.branches/
+supabase/.temp/
