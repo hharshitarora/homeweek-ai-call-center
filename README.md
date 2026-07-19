@@ -1,31 +1,45 @@
-# AI Voice Agent for Real Estate
+# 📞 HomeWeek AI Call Center
+### Scaling human-level qualification to thousands of leads.
 
-As a Founding Engineer, I architected this AI-driven call center—an end-to-end outbound system that qualifies real estate leads using natural conversational AI. This project demonstrates sophisticated AI orchestration and real-time processing to drive significant business value.
+This isn't just a dialer; it's an end-to-end outbound AI ecosystem that qualifies real estate leads with natural, bilingual conversational intelligence. Built with the rigors of a Founding Engineer, it handles the "grunt work" of lead outreach so your team can focus on closing.
 
-## Technical Stack
+## 🚀 The Product Experience
+HomeWeek AI transforms cold leads into qualified opportunities. By combining low-latency voice synthesis with sophisticated classification logic, it increased lead qualification rates by **40%** for a live real estate operation.
 
-- **Frontier LLM Orchestration**: Bolna and Ringg AI for natural voice interactions.
-- **Backend**: Node.js (Express) with real-time webhook handling.
-- **Database**: Supabase (Postgres) for lead and call management.
-- **Alerts**: Twilio WhatsApp for instant hot-lead escalation.
+### 🔄 Process Flow
+```text
+[ CSV Lead Ingest ] --> [ Bolna/Ringg AI Engine ] --> [ Live Voice Call ]
+                                                            |
+                                                            v
+[ Instant Escalation ] <--(Hot Lead)--- [ Real-time Lead Classification ]
+(Twilio WhatsApp)                            (Supabase / Postgres)
+```
 
-## Impact
+## 🛠️ Technical Stack
+- **Voice Orchestration**: **Bolna** and **Ringg AI** for ultra-natural, low-latency interactions.
+- **Core Engine**: **Node.js (Express)** handling high-concurrency webhooks.
+- **Persistence Layer**: **Supabase (Postgres)** for lead state and call lifecycle management.
+- **Hot-Lead Escalation**: **Twilio WhatsApp** API for instant agent notifications.
 
-This project was built for a live real estate operation, successfully handling thousands of conversations at scale and increasing the lead qualification rate by 40% through automated, bilingual AI outreach.
+## 📈 Engineering Impact
+- Handled **thousands of concurrent conversations** in a live production environment.
+- **40% increase** in qualified leads through automated, high-frequency outreach.
+- Successfully deployed as a mission-critical tool for a real estate business.
 
-## Infrastructure
+---
 
-The infrastructure for this project is managed using Terraform.
-See the [terraform/](./terraform/) directory for configuration details.
+## 🏗️ Infrastructure
+Managed via Infrastructure as Code (Terraform).
+See the [terraform/](./terraform/) directory for configuration.
 
-## Installation
-
+## 📥 Installation
 ```bash
 npm install
 cp .env.example .env
 npm start
 ```
 
-## Usage
-
-Use the dashboard to ingest leads via CSV, monitor live call progress, and view automated lead classifications.
+## 🎮 Usage
+1. Ingest leads via CSV on the management dashboard.
+2. Monitor live call progress and sentiment in real-time.
+3. Receive instant WhatsApp alerts for "Hot Leads" ready for human takeover.
